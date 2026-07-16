@@ -1,4 +1,4 @@
-// classifier.js — v4: Signal-scoring with monorepo-aware library detection
+// classifier.js — v5: Monorepo with examples = framework signal
 
 import { RepoType } from './contract.js';
 
@@ -62,7 +62,7 @@ export async function classifyRepo(tree, packageJson) {
   // ── LIBRARY ──
   if (hasPeerDeps) scores.library += 5;
   if (kwLib) scores.library += 4;
-  if (LIBRARY_NAMES.has(pkgName)) scores.library += 8; // strong name signal
+  if (LIBRARY_NAMES.has(pkgName)) scores.library += 8;
   if (hasMainField) scores.library += 2;
   // Monorepo without strong deployable/framework signals → likely library
   if (hasPackages && !hasPages && !hasNext && !hasNuxt && !hasServerDep && !kwFramework) {
@@ -75,7 +75,7 @@ export async function classifyRepo(tree, packageJson) {
   if (hasLib && hasExamples) scores.library -= 1;
 
   // ── FRAMEWORK ──
-  if (FRAMEWORK_NAMES.has(pkgName)) scores.framework += 8; // stronger name signal
+  if (FRAMEWORK_NAMES.has(pkgName)) scores.framework += 8;
   if (kwFramework) scores.framework += 3;
   if (hasLib && hasExamples) scores.framework += 3;
   if (hasPackages && (hasSrc || hasLib)) scores.framework += 3;
@@ -83,6 +83,8 @@ export async function classifyRepo(tree, packageJson) {
   if (hasPackages && hasLib && hasServerDep) scores.framework += 3;
   if ((hasNext || hasNextConfig) && hasPackages && kwFramework) scores.framework += 3;
   if ((hasNuxt || hasNuxtConfig) && hasPackages && kwFramework) scores.framework += 3;
+  // Monorepo with examples but no app pages = framework/platform (not a deployable app)
+  if (hasPackages && hasExamples && !hasPages) scores.framework += 10;
   // Penalties
   if (hasPages) scores.framework -= 3;
   if (!hasLib && !hasPackages) scores.framework -= 2;
@@ -123,9 +125,8 @@ export async function classifyRepo(tree, packageJson) {
   return RepoType[winner.toUpperCase()] || RepoType.UNKNOWN;
 }
 
-// Debug version: returns { result, scores } for inspection
+// Debug version: returns { result, scores, signals } for inspection
 export async function classifyRepoDebug(tree, packageJson) {
-  // Re-run the scoring logic and return intermediate values
   const scores = { empty: 0, library: 0, deployable: 0, server: 0, framework: 0, tool: 0 };
 
   const hasPkgJson = tree.includes('package.json');
@@ -193,6 +194,9 @@ export async function classifyRepoDebug(tree, packageJson) {
   if (hasPackages && hasLib && hasServerDep) scores.framework += 3;
   if ((hasNext || hasNextConfig) && hasPackages && kwFramework) scores.framework += 3;
   if ((hasNuxt || hasNuxtConfig) && hasPackages && kwFramework) scores.framework += 3;
+  // Monorepo with examples but no app pages = framework/platform
+  if (hasPackages && hasExamples && !hasPages) scores.framework += 10;
+  // Penalties
   if (hasPages) scores.framework -= 3;
   if (!hasLib && !hasPackages) scores.framework -= 2;
   if (hasAstroConfig && hasPackages) scores.framework -= 5;
