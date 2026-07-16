@@ -1,1 +1,240 @@
-LyoqCiAqIFNwZWNpYWxpc3Q6IGRhdGFiYXNlLWNvbmZpZwogKiBDaGVja3MgaWYgZGF0YWJhc2UgY29ubmVjdGlvbiB1c2VzIGVudmlyb25tZW50IHZhcmlhYmxlcyByYXRoZXIgdGhhbiBoYXJkY29kZWQgY3JlZGVudGlhbHMuCiAqLwoKaW1wb3J0IHsgUmVwb1R5cGUgfSBmcm9tICcuLi9jb250cmFjdC5qcyc7CgpleHBvcnQgY29uc3QgY2hlY2tJZCA9ICdkYXRhYmFzZS1jb25maWcnOwpleHBvcnQgY29uc3QgbmFtZSA9ICdEYXRhYmFzZSBDb25maWd1cmF0aW9uJzsKZXhwb3J0IGNvbnN0IGFwcGxpZXNUbyA9IFsnZGVwbG95YWJsZScsICdzZXJ2ZXInLCAnZnJhbWV3b3JrJ107Cgpjb25zdCBEQl9ERVBTID0gWydtb25nb29zZScsICdzZXF1ZWxpemUnLCAncHJpc21hJywgJ3R5cGVvcm0nLCAna25leCcsICdwZycsICdteXNxbDInLCAnbW9uZ29kYicsICdyZWRpcycsICdAcHJpc21hL2NsaWVudCddOwoKLy8gR09PRCBwYXR0ZXJucyDigJQgZXZpZGVuY2UgdGhhdCBEQiBjb25maWcgdXNlcyBlbnYgdmFycwpjb25zdCBHT09EX1BBVFRFUk5TID0gWwogIC8vIEpTL1RTOiBwcm9jZXNzLmVudi4qIHBhdHRlcm5zCiAgL3Byb2Nlc3NcLmVudiwuKERBVEFCQVNFX1VSTHxEQVRBQkFTRV9IT1NUfERBVEFCQVNFX05BTUV8REFUQUJBU0VfUE9SVHxEQVRBQkFTRV9VU0VSfERBVEFCQVNFX1BBU1NXT1JERERBVEFCQVNFX1VTRVJOQU1FKS9pLAogIC9wcm9jZXNzXC5lbnZcLiggREJfSE9TVHxEQl9OQU1FfERCX1BPUlR8REJfVVNFUnxEQl9QQVNTfERCX1BBU1NXT1JERERCX1VTRVJOQU1FfERCX1VSTHxEQl9DT05ORUNUSU9OX1NUUklORyksCiAgL3Byb2Nlc3NcLmVudi4uKE1PTkdPfE1PTkdPREIpXy9pLAogIC9wcm9jZXNzXC5lbnZcLiggUkVESVN8UkVESVNfVVJMfFJFRElTX0hPU1R8UkVESVNfUE9SVCkvaSwKICBwcm9jZXNzXC5lbnZcLiggUEdffFBPU1RHUkVTX3xQT1NHUkVTUUxfKS9pLAogIC9wcm9jZXNzXC5lbnZcLiggTVlTUUxffE1ZU1FMMl8pL2ksCiAgL3Byb2Nlc3NcLmVudi5eW0EtWl8hKrNUQUJBU0VeW0EtWl9dKi9pLCAgICAgICAgLy8gY2F0Y2hlcyBORVhUX1BSSVZBVEVfREFUQUJBU0VfVVJMLCBldGMuCiAgL3Byb2Nlc3NcLmVudi5eW0EtWl9dKkRCX1tBLVpfXysvaSwgICAgICAgICAgICAgIC8vIGNhdGNoZXMgYW55IERCXyBwcmVmaXhlZCBlbnYgdmFyCiAgLy8gUHJpc21hOiBlbnYoIi4uLiIpIHBhdHRlcm5zIGluIC5wcmlzbWEgZmlsZXMKICAvZW52XHMqXCtcKlxzKlsiJ11bXiInXSpEQVRBQkFTRVteIiddWyInXVxzKlwpL2ksCiAgL2VudlxzKlwoXHMqWyInXVteIiddKkRCX1teIiddWyInXVxzKlwpL2ksCiAgL2VudlxzKlwoXHMqWyInXVteIiddKihNT05HT3xSRURJU3xQT1NHUkVTfE1ZU1FMKVteIiddWyInXVxzKlwpL2ksCiAgLy8gQ29uZmlnLWZyb20tZW52IHBhdHRlcm5zIChEaXJlY3R1cy1zdHlsZSkKICAvZ2V0Q29uZmlnRnJvbUVudlxzKlwoXHMqWydiXURCXy9pLAogIC9nZXRDb25maWdGcm9tRW52XHMqXCtcKlxzKlsnIl1EQVRBQkFTRS9pLAogIC8vIERvY2tlciBjb21wb3NlIGVudiBpbnRlcnBvbGF0aW9uCiAgL1wkXHsoREFUQUJBU0VfVVJMRERCX0hPU1R8REJfTkFNRRERCfBPUlR8REFUQUJBU0VfW0EtWl9dKyl9L2ksCiAgL1wkXHsoTU9OR098TU9OR09EQnxSRURJU3xQT1NHUkVTfE1ZU1FMKVtBLVpfXSokfS9pLAogIC8vIC5lbnYgLyAuZW52LmV4YW1wbGUgZmlsZXM6IHJhdyBlbnYgdmFyIGFzc2lnbm1lbnRzIChubyBwcm9jZXNzLmVudi4gcHJlZml4KQogIC9eKERBVEFCQVNFX1VSTHxEQVRBQkFTRV9IT1NUfERBVEFCQVNFX05BTUV8REFUQUJBU0VfUE9SVHxEQVRBQkFTRV9VU0VSKT0vaW0sCiAgL14oREJfSE9TVHxEQl9OQU1FfERCX1BPUlR8REJfVVNFUnxEQl9QQVNTfERCX1VSTCk9L2ltLAogIC9eKE1PTkdPfE1PTkdPREIpXy9pbSwKICAvXihQR198UE9TVEdSRVNfKFA7!$7$*)9QT1NHUkVTUUxfKS9pbSwKICAvXihSRURJU19VUkx8UkVESVNfSE9TVH|SRURJU19QT1JUKT0vaW0sCl07CgovLyBCQUQgcGF0dGVybnMg4oCUIGhhcmRjb2RlZCBjb25uZWN0aW9uIHN0cmluZ3Mgd2l0aCBjcmVkZW50aWFscwpjb25zdCBCQURfUEFUVEVSTlMgPSBbCiAgLy8gQ29ubmVjdGlvbiBzdHJpbmdzIHdpdGggZW1iZWRkZWQgcGFzc3dvcmRzCiAgLyhtb25nb2RifG1vbmdvZGIrcxJydnBvc3RncmVzfHBvc3RncmVzcWx8bXlzcWwpOlwvXC9bXjpAXHM5XSsoQF5ccyp+QFMrLyksCiAgLy8gTXlTUUwgY29ubmVjdGlvbiBzdHJpbmdzIHdpdGggcGFzc3dvcmQKICAvbXlzcWw6XC9cL1x3KzpcdytAdytdL2ksCl07CgovLyBTVFJPTkcsIGluZGljYXRvcnMg4oCUIHVzZWQgd2hlbiBoYXNEYkRlcCBpcyBmYWxzZQovLyBUaGVzZSBhcmUgZGlyZWN0b3J5LWJhc2VkIHBhdHRlcm5zIHRoYXQgc3Ryb25nbHkgaW5kaWNhdGUgREIgdXNhZ2UKY29uc3QgU1RST05HX0lORElDQVRPUl9QQVRURVJOUyA9IFsKICAvKFxefFtcL10pKGRifGRhdGFiYXNlfG1vZGVsKXM/W1wvXS9pLCAgICAgICAgICAgICAgIC8vIGZpbGVzIGluIGRiLwgZGF0YWJhc2UsIG1vZGVsLCBtb2RlbHMvIGRpcnMKICAvKF58W1wvXSlwcmlzbWFbXC9dL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBmaWxlcyBpbiBwcmlzbWEvIGRpcmVjdG9yeQogIChcXHxbXC9dKShjb25maWd8Y29uZmlncylbXC9dKGRifGRhdGFiYXNlfG1vbmdvfHBvc3RncmVzfG15c3FsfHJlZGlzKS9pLCAgLy8gY29uZmlnL2RiLyBvciBjb25maWcvZGF0YWJhc2UvCiAgL1x4fFtcL10pKFteXC9dKlwuKT8oZGJ8ZGF0YWJhc2V8bW9uZ298cG9zdGdyZXN8bXlzcWx8cmVkaXMpKFteXC9dKik/XG4uanN8dHN8bWpzfGNqcyQvaSwgLy8gZmlsZW5hbWVzIHdpdGggREIgdGVybQpdOwoKLy8gV0VBSyBpbmRpY2F0b3JzIOKAlCB1c2VkIG9ubHkgd2hlbiBoYXNEYkRlcCBpcyB0cnVlCi8vIFRoZXNlIG1hdGNoIHRvbyBtYW55IG5vbi1EQiByZXBvcyB0byBiZSByZWxpYWJsZSBzdGFuZGFsb25lIGluZGljYXRvcnMKY29uc3QgV0VBS19JTkRJQ0FUT1JfUEFUVEVSTlMgPSBbCiAgL1wuZW52L2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIC5lbnYgZmlsZXMgKGFsbW9zdCBldmVyeSByZXBvIGhhcyB0aGVzZSkKICAvKGRvY2tlci1jb21wb3NlfGNvbXBvc2UuKS9pLCAgICAgICAgICAgICAgICAgICAgICAgLy8gZG9ja2VyIGNvbXBvc2UgZmlsZXMKICAvKFxefFtcL10pY29ubmVjdGlvblwuKGpzfHRzfG1qc3xjanMpJC9pLCAgICAgICAgICAgICAvLyBjb25uZWN0aW9uLmpzIChjb3VsZCBiZSBXZWJTb2NrZXQsIEhUVFAsIGV0Yy4pCl07CgovLyBGaWxlIGV4dGVuc2lvbnMgd2UgY2FyZSBhYm91dApjb25zdCBTQ0FOX0VYVEVOU0lPTlMgPSAvXC4oanN8dHN8bWpzfGNqc3xwcmlzbWF8eW1sfHlhbWwpJC9pOwpjb25zdCBFTlZfRVhURU5TSU9OUyA9IC9cLmVudi87CmNvbnN0IERPQ0tFUl9DT01QT1NFX1BBVFRFUk4gPSAvZG9ja2VyLWNvbXBvc2UvOwoKLy8gS25vd24gREIgZHJpdmVyIHJlcG9zIHRoYXQgc2hvdWxkIGJlIHNraXBwZWQKY29uc3QgS05PV05fREJfRFJJVkVSX1JFUE9TID0gWwogICdub2RlLXJlZGlzJywgJ3JlZGlzJywKICAnbm9kZS1wb3N0Z3JlcycsICdwb3N0Z3JlcycsCiAgJ25vZGUtbXlzcWwyJywgJ215c3FsMicsICdteXNxbCcsCiAgJ21vbmdvb3NlJywKICAnc2VxdWVsaXplJywKICAncHJpc21hJywKICAndHlwZW9ybScsCiAgJ2tuZXgnLAogICdtb25nb2RifCdub2RlLW1vbmdvZGItbmF0aXZlJywKXTsKCi8vIERldGVjdCBpZiB0aGlzIHJlcG8gSVMgYSBEQiBkcml2ZXIgbGlicmFyeSBpdHNlbGYKZnVuY3Rpb24gaXNEYkRyaXZlckxpYnJhcnkocGFja2FnZUpzb24sIHJlcG8pIHsKICBjb25zdCBwa2dOYW1lID0gcGFja2FnZUpzb24/Lm5hbWU7CiAgaWYgKHBrZ05hbWUpIHsKICAgIGlmIChEQl9ERVBTLmluY2x1ZGVzKHBrZ05hbWUpKSByZXR1cm4gdHJ1ZTsKICAgIGlmIChwa2dOYW1lLnN0YXJ0c1dpdGgoJ0AnKSkgewogICAgICBjb25zdCBzY29wZU5hbWUgPSBwa2dOYW1lLnNwbGl0KCcvJylbMV07CiAgICAgIGlmIChzY29wZU5hbWUgJiYgREJfREVQUy5pbmNsdWRlcyhzY29wZU5hbWUpKSByZXR1cm4gdHJ1ZTsKICAgIH0KICB9CiAgaWYgKHJlcG8gJiYgS05PV05fREJfRFJJVkVSX1JFUE9TLnNvbWUobmFtZSA9PiByZXBvLnRvTG93ZXJDYXNlKCkgPT09IG5hbWUudG9Mb3dlckNhc2UoKSkpIHJldHVybiB0cnVlOwogIHJldHVybiBmYWxzZTsKfQoKZXhwb3J0IGFzeW5jIGZ1bmN0aW9uIGNoZWNrKGNvbnRleHQpIHsKICBjb25zdCB7IHRyZWUsIGZpbGVzLCBwYWNrYWdlSnNvbiwgcmVwb1R5cGUsIHJlcG8gfSA9IGNvbnRleHQ7CgogIHRyeSB7CiAgICAvLyBTa2lwIGVtcHR5IHJlcG9zIGFuZCBsaWJyYXJpZXMKICAgIGlmIChyZXBvVHlwZSA9PT0gUmVwb1R5cGUuRU1QVFkpIHsKICAgICAgcmV0dXJuIHsgY2hlY2tJZCwgc3RhdHVzOiAnbm90LWFwcGxpY2FibGUnLCBjb25maWRlbmNlOiAnaGlnaCcsIG1lc3NhZ2U6ICdFbXB0eSByZXBvIOKAlCBubyBEQiBjb25maWcgbmVlZGVkJywgZmluZGluZ3M6IFtdIH07CiAgICB9CiAgICBpZiAocmVwb1R5cGUgPT09IFJlcG9UeXBlLkxJQlJBUlkpIHsKICAgICAgcmV0dXJuIHsgY2hlY2tJZCwgc3RhdHVzOiAnbm90LWFwcGxpY2FibGUnLCBjb25maWRlbmNlOiAnaGlnaCcsIG1lc3NhZ2U6ICdMaWJyYXJ5IOKAlCBubyBEQiBjb25maWcgbmVlZGVkJywgZmluZGluZ3M6IFtdIH07CiAgICB9CgogICAgLy8gU2tpcCBEQiBkcml2ZXIgbGlicmFyaWVzIHRoZW1zZWx2ZXMKICAgIGlmIChpc0RiRHJpdmVyTGlicmFyeShwYWNrYWdlSnNvbiwgcmVwbykpIHsKICAgICAgY29uc3QgcmVhc29uID0gcGFja2FnZUpzb24/Lm5hbWUgfHwgcmVwbzsKICAgICAgcmV0dXJuIHsgY2hlY2tJZCwgc3RhdHVzOiAnbm90LWFwcGxpY2FibGUnLCBjb25maWRlbmNlOiAnaGlnaCcsIG1lc3NhZ2U6IGBEQiBkcml2ZXIgbGlicmFyeSAoJHtyZWFzb259KSDigJQgbm90IGFwcGxpY2FibGVgLCBmaW5kaW5nczogW10gfTsKICAgIH0KCiAgICBjb25zdCBkZXBzID0geyAuLi5wYWNrYWdlSnNvbj8uZGVwZW5kZW5jaWVzLCAuLi5wYWNrYWdlSnNvbj8uZGV2RGVwZW5kZW5jaWVzIH0gfHwge307CiAgICBjb25zdCBoYXNEYkRlcCA9IERCX0RFUFMuc29tZShkID0+IGRlcHNbZF0pOwoKICAgIGlmICghaGFzRGJEZXApIHsKICAgICAgLy8gV2hlbiBubyBEQiBkZXA6IG9ubHkgc3Ryb25nIGluZGljYXRvcnMgc2hvdWxkIHRyaWdnZXIgYSBzY2FuCiAgICAgIC8vIFdlYWsgaW5kaWNhdG9ycyAoLmVudiwgZG9ja2VyLWNvbXBvc2UpIGFyZSBpZ25vcmVkIOKAlCB0aGV5IG1hdGNoIHRvbyBtYW55IHJlcG9zCiAgICAgIGNvbnN0IHN0cm9uZ01hdGNoZXMgPSB0cmVlLmZpbHRlcihwID0+IHsKICAgICAgICBpZiAoIVNDQU5fRVhURU5TSU9OUy50ZXN0KHApKSByZXR1cm4gZmFsc2U7CiAgICAgICAgaWYgLyh0ZXN0fHNwZWN8ZXhhbXBsZXxub2RlX21vZHVsZXMpLy50ZXN0KHApKSByZXR1cm4gZmFsc2U7CiAgICAgICAgcmV0dXJuIFNUUk9OR19JTkRJQ0FUT1JfUEFUVEVSTlMuc29tZShwYXQgPT4gcGF0LnRlc3QocCkpOwogICAgICB9KTsKCiAgICAgIGlmIChzdHJvbmdNYXRjaGVzLmxlbmd0aCA9PT0gMCkgewogICAgICAgIHJldHVybiB7IGNoZWNrSWQsIHN0YXR1czogJ25vdC1hcHBsaWNhYmxlJywgY29uZmlkZW5jZTogJ21lZGl1bScsIG1lc3NhZ2U6ICdObyBkYXRhYmFzZSBkZXBlbmRlbmN5IG9yIERCLXJlbGF0ZWQgZmlsZXMgZm91bmQnLCBmaW5kaW5nczogW10gfTsKICAgICAgfQogICAgfQoKICAgIC8vIEJ1aWxkIHByaW9yaXRpemVkIHNjYW4gbGlzdAogICAgLy8gMS4gQWxsIC5lbnYgZmlsZXMgKHNtYWxsLCBmYXN0LCBoaWdoIHNpZ25hbCkKICAgIGNvbnN0IGVudkZpbGVzID0gdHJlZS5maWx0ZXIocCA9PiB7CiAgICAgIGlmICghRU5WX0VYVEVOU0lPTlMudGVzdChwKSkgcmV0dXJuIGZhbHNlOwogICAgICBpZiAoL1wudGVzdHxzcGVjfGZpeHR1cmV8bW9jaykKByZW52L2kudGVzdChwKSkgcmV0dXJuIGZhbHNlOwogICAgICBpZiAoL1wuZGIuZW52JC9pLnRlc3QocCkpIHJldHVybiBmYWxzZTsKICAgICAgcmV0dXJuIHRydWU7CiAgICB9KTsKCiAgICAvLyAyLiBBbGwgcHJpc21hIHNjaGVtYSBmaWxlcyAoaGlnaCBzaWduYWwpCiAgICBjb25zdCBwcmlzbWFGaWxlcyA9IHRyZWUuZmlsdGVyKHAgPT4KICAgICAgL1xefFtcL10pcHJpc21hW1wvXS9pLnRlc3QocCkgJiYgU0NOQVhfRVhURU5TSU9OUy50ZXN0KHApCiAgICApOwoKICAgIC8vIDMuIERvY2tlciBjb21wb3NlIGZpbGVzCiAgICBjb25zdCBkb2NrZXJGaWxlcyA9IHRyZWUuZmlsdGVyKHAgPT4KICAgICAgRE9DS0VSX0NPTVBPU0VfUEFUVEVSTi50ZXN0KHApICYmIC9cLih5bWx8eWFtbCkkLy50ZXN0KHApCiAgICApOwoKICAgIC8vIDQuIE90aGVyIERCLXJlbGF0ZWQgZmlsZXMgKGxpbWl0ZWQpCiAgICBjb25zdCBzY2FubmVkU2V0ID0gbmV3IFNldChbLi4uZW52RmlsZXMsIC4uLnByaXNtYUZpbGVzLCAuLi5kb2NrZXJGaWxlcyBdKTsKICAgIGNvbnN0IG90aGVyRmlsZXMgPSB0cmVlLmZpbHRlcihwID0+IHsKICAgICAgaWYgKHNjYW5uZWRTZXQuaGFzKHApKSByZXR1cm4gZmFsc2U7CiAgICAgIGlmIC8odGVzdHxzcGVjfGV4YW1wbGV8bm9kZV9tb2R1bGVzfFwuZ2l0KS9pLnRlc3QocCkpIHJldHVybiBmYWxzZTsKICAgICAgaWYgKCFTQ0FOX0VYVEVOU0lPTlMudGVzdChwKSkgcmV0dXJuIGZhbHNlOwogICAgICByZXR1cm4gWy4uLlNUUk9OR19JTkRJQ0FUT1JfUEFUVEVSTlMsIC4uLldFQUtfSU5ESUNBVE9SX1BBVFRFUk5TXQogICAgICAgIC5zb21lKHBhdCA9PiBwYXQudGVzdChwKSk7CiAgICB9KS5zbGljZSgwLCAxMCk7CgogICAgY29uc3Qgc291cmNlRmlsZXMgPSBbLi4uZW52RmlsZXMsIC4uLnByaXNtYUZpbGVzLCAuLi5kb2NrZXJGaWxlcywgLi4ub3RoZXJGaWxlc10KICAgICAgLnNsaWNlKDAsIDIwKTsKCiAgICBsZXQgZm91bmRHb29kID0gZmFsc2U7CiAgICBsZXQgZm91bmRCYWQgPSBmYWxzZTsKICAgIGNvbnN0IGZpbmRpbmdzID0gW107CgogICAgZm9yIChjb25zdCBmaWxlUGF0aCBvZiBzb3VyY2VGaWxlcykgewogICAgICBjb25zdCBjb250ZW50ID0gYXdhaXQgZmlsZXMuZ2V0KGZpbGVQYXRoKTsKICAgICAgaWYgKCFjb250ZW50KSBjb250aW51ZTsKCiAgICAgIC8vIENoZWNrIGZvciBHT09E-IHBhdHRlcm5zIChlbnYgdmFycykKICAgICAgZm9yIChjb25zdCBwYXR0ZXJuIG9mIEdPT0RfUEFUVEVSTlMpIHsKICAgICAgICBpZiAocGF0dGVybi50ZXN0KGNvbnRlbnQpKSB7CiAgICAgICAgICBmb3VuZEdvb2QgPSB0cnVlOwogICAgICAgICAgY29uc3QgbGluZXMgPSBjb250ZW50LnNwbGl0KCdcbicpOwogICAgICAgICAgZm9yIChsZXQgaSA9IDA7IGkgPCBsaW5lcy5sZW5ndGg7IGkrKykgewogICAgICAgICAgICBpZiAocGF0dGVybi50ZXN0KGxpbmVzW2ldKSkgewogICAgICAgICAgICAgIGZpbmRpbmdzLnB1c2goewogICAgICAgICAgICAgICAgZmlsZTogZmlsZVBhdGgsCiAgICAgICAgICAgICAgICBsaW5lOiBpICsgMSwKICAgICAgICAgICAgICAgIGlzc3VlOiAnREIgY29uZmlnIHVzZXMgZW52aXJvbm1lbnQgdmFyaWFibGVzJywKICAgICAgICAgICAgICAgIHNldmVyaXR5OiAnaW5mbycsCiAgICAgICAgICAgICAgfSk7CiAgICAgICAgICAgICAgYnJlYWs7CiAgICAgICAgICAgIH0KICAgICAgICAgIH0KICAgICAgICB9CiAgICAgIH0KCiAgICAgIC8vIENoZWNrIGZvciBCQUQgcGF0dGVybnMgKGhhcmRjb2RlZCBjcmVkZW50aWFscykKICAgICAgLy8gU2tpcCAuZW52LiogdGVtcGxhdGVzIGFuZCBkb2NrZXItY29tcG9zZSAoZGV2IGRlZmF1bHRzLCBub3QgcHJvZHVjdGlvbiBzZWNyZXRzKQogICAgICBjb25zdCBpc0VudlRlbXBsYXRlID0gL1wuZW52XC4vaS50ZXN0KGZpbGVQYXRoKTsKICAgICAgY29uc3QgaXNEb2NrZXJDb21wb3NlID0gL2RvY2tlci1jb21wb3NlfGNvbXBvc2UuLy50ZXN0KGZpbGVQYXRoKTsKICAgICAgaWYgKCFpc0VudlRlbXBsYXRlICYmICFpc0RvY2tlckNvbXBvc2UpIHsKICAgICAgICBmb3IgKGNvbnN0IHBhdHRlcm4gb2YgQkFEX1BBVFRFUk5TKSB7CiAgICAgICAgICBjb25zdCBtYXRjaGVzID0gY29udGVudC5tYXRjaChuZXcgUmVnRXhwKHBhdHRlcm4uc291cmNlLCAnZ21pJykpOwogICAgICAgICAgaWYgKG1hdGNoZXMpIHsKICAgICAgICAgICAgZm91bmRCYWQgPSB0cnVlOwogICAgICAgICAgICBjb25zdCBsaW5lcyA9IGNvbnRlbnQuc3BsaXQoJ1xuJyk7CiAgICAgICAgICAgIGZvciAoY29uc3QgbWF0Y2hTdHIgb2YgbWF0Y2hlcy5zbGljZSgwLCAzKSkgewogICAgICAgICAgICAgIGZvciAobGV0IGkgPSAwOyBpIDwgbGluZXMubGVuZ3RoOyBpKyspIHsKICAgICAgICAgICAgICAgIGlmIChsaW5lc1tpXS5pbmNsdWRlcyhtYXRjaFN0ci5zdWJzdHJpbmcoMCwgNDApKSkgewogICAgICAgICAgICAgICAgICBmaW5kaW5ncy5wdXNoKHsKICAgICAgICAgICAgICAgICAgICBmaWxlOiBmaWxlUGF0aCwKICAgICAgICAgICAgICAgICAgICBsaW5lOiBpICsgMSwKICAgICAgICAgICAgICAgICAgICBpc3N1ZTogJ0hhcmRjb2RlZCBEQiBjb25uZWN0aW9uIHN0cmluZyB3aXRoIGNyZWRlbnRpYWxzJywKICAgICAgICAgICAgICAgICAgICBzZXZlcml0eTogJ2NyaXRpY2FsJywKICAgICAgICAgICAgICAgICAgfSk7CiAgICAgICAgICAgICAgICAgIGJyZWFrOwogICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgICAgfQogICAgICAgIH0KICAgICAgfQogICAgfQoKICAgIC8vIERlY2lzaW9uIGxvZ2ljCiAgICBpZiAoZm91bmRHb29kICYmICFmb3VuZEJhZCkgewogICAgICByZXR1cm4geyBjaGVja0lkLCBzdGF0dXM6ICdwYXNzJywgY29uZmlkZW5jZTogJ2hpZ2gnLCBtZXNzYWdlOiAnREIgY29uZmlndXJlZCB3aXRoIGVudmlyb25tZW50IHZhcmlhYmxlcycsIGZpbmRpbmdzIH07CiAgICB9CiAgICBpZiAoZm91bmRCYWQgJiYgIWZvdW5kR29vZCkgewogICAgICByZXR1cm4geyBjaGVja0lkLCBzdGF0dXM6ICdmYWlsJywgY29uZmlkZW5jZTogJ2hpZ2gnLCBtZXNzYWdlOiAnSGFyZGNvZGVkIERiIGNyZWRlbnRpYWxzIGRldGVjdGVkJywgZmluZGluZ3MgfTsKICAgIH0KICAgIGlmIChmb3VuZEJhZCAmJiBmb3VuZEdvb2QpIHsKICAgICAgcmV0dXJuIHsgY2hlY2tJZCwgc3RhdHVzOiAnZmFpbCcsIGNvbmZpZGVuY2U6ICdoaWdoJywgbWVzc2FnZTogJ0hhcmRjb2RlZCBEQiBjcmVkZW50aWFscyBkZXRlY3RlZCBhb25nc2lkZSBzb21lIGVudiB2YXIgdXNhZ2UnLCBmaW5kaW5ncyB9OwogICAgfQogICAgaWYgKGhhc0RiRGVwKSB7CiAgICAgIHJldHVybiB7IGNoZWNrSWQsIHN0YXR1czogJ2NoZWNrLWl0JywgY29uZmlkZW5jZTogJ21lZGl1bScsIG1lc3NhZ2U6ICdEQiBkZXBlbmRlbmN5IGZvdW5kIGJ1dCBjb3VsZCBub3QgdmVyaWZ5IGNvbmZpZyAobm8gcmVjb2duaXplZCBwYXR0ZXJucyknLCBmaW5kaW5nczogW10gfTsKICAgIH0KICAgIHJldHVybiB7IGNoZWNrSWQsIHN0YXR1czogJ2NoZWNrLWl0JywgY29uZmlkZW5jZTogJ2xvdycsIG1lc3NhZ2U6ICdDb3VsZCBub3QgZGV0ZXJtaW5lIERiIGNvbmZpZ3VyYXRpb24nLCBmaW5kaW5nczogW10gfTsKCiAgfSBjYXRjaCAoZXJyKSB7CiAgICByZXR1cm4geyBjaGVja0lkLCBzdGF0dXM6ICdjaGVjay1pdCcsIGNvbmZpZGVuY2U6ICdsb3cnLCBtZXNzYWdlOiBgRXJyb3I6ICR7ZXJyLm1lc3NhZ2V9YCwgZmluZGluZ3M6IFtdIH07CiAgfQp9Cg==
+/**
+ * Specialist: database-config
+ * Checks if database connection uses environment variables rather than hardcoded credentials.
+ */
+
+import { RepoType } from '../contract.js';
+
+export const checkId = 'database-config';
+export const name = 'Database Configuration';
+export const appliesTo = ['deployable', 'server', 'framework'];
+
+const DB_DEPS = ['mongoose', 'sequelize', 'prisma', 'typeorm', 'knex', 'pg', 'mysql2', 'mongodb', 'redis', '@prisma/client'];
+
+// GOOD patterns — evidence that DB config uses env vars
+const GOOD_PATTERNS = [
+  // JS/TS: process.env.* patterns
+  /process\.env\.(DATABASE_URL|DATABASE_HOST|DATABASE_NAME|DATABASE_PORT|DATABASE_USER|DATABASE_PASSWORD|DATABASE_USERNAME)/i,
+  /process\.env\.(DB_HOST|DB_NAME|DB_PORT|DB_USER|DB_PASS|DB_PASSWORD|DB_USERNAME|DB_URL|DB_CONNECTION_STRING)/i,
+  /process\.env\.(MONGO|MONGODB)_/i,
+  /process\.env\.(REDIS|REDIS_URL|REDIS_HOST|REDIS_PORT)/i,
+  /process\.env\.(PG_|POSTGRES_|POSTGRESQL_)/i,
+  /process\.env\.(MYSQL_|MYSQL2_)/i,
+  /process\.env\.[A-Z_]*DATABASE[A-Z_]*/i,        // catches NEXT_PRIVATE_DATABASE_URL, etc.
+  /process\.env\.[A-Z_]*DB_[A-Z_]+/i,              // catches any DB_ prefixed env var
+  // Prisma: env("...") patterns in .prisma files
+  /env\s*\(\s*["'][^"']*DATABASE[^"']*["']\s*\)/i,
+  /env\s*\(\s*["'][^"']*DB_[^"']*["']\s*\)/i,
+  /env\s*\(\s*["'][^"']*(MONGO|REDIS|POSTGRES|MYSQL)[^"']*["']\s*\)/i,
+  // Config-from-env patterns (Directus-style)
+  /getConfigFromEnv\s*\(\s*['"]DB_/i,
+  /getConfigFromEnv\s*\(\s*['"]DATABASE/i,
+  // Docker compose env interpolation
+  /\$\{(DATABASE_URL|DB_HOST|DB_NAME|DB_PORT|DATABASE_[A-Z_]+)\}/i,
+  /\$\{(MONGO|MONGODB|REDIS|POSTGRES|MYSQL)[A-Z_]*\}/i,
+  // .env / .env.example files: raw env var assignments (no process.env. prefix)
+  /^(DATABASE_URL|DATABASE_HOST|DATABASE_NAME|DATABASE_PORT|DATABASE_USER)=/im,
+  /^(DB_HOST|DB_NAME|DB_PORT|DB_USER|DB_PASS|DB_URL)=/im,
+  /^(MONGO|MONGODB)_/im,
+  /^(PG_|POSTGRES_|POSTGRESQL_)/im,
+  /^(REDIS_URL|REDIS_HOST|REDIS_PORT)=/im,
+];
+
+// BAD patterns — hardcoded connection strings with credentials
+const BAD_PATTERNS = [
+  // Connection strings with embedded passwords
+  /(mongodb|mongodb\+srv|postgres|postgresql|mysql):\/\/[^:]+:[^@\s]+@\S+/i,
+  // MySQL connection strings with password
+  /mysql:\/\/\w+:\w+@\w+/i,
+];
+
+// STRONG indicators — used when hasDbDep is false
+// These are directory-based patterns that strongly indicate DB usage
+const STRONG_INDICATOR_PATTERNS = [
+  /(^|[\/])(db|database|model)s?[\/]/i,               // files in db/, database/, model/, models/ dirs
+  /(^|[\/])prisma[\/]/i,                               // files in prisma/ directory
+  /(^|[\/])(config|configs)[\/](db|database|mongo|postgres|mysql|redis)/i,  // config/db/ or config/database/
+  /(^|[\/])([^\/]*\.)?(db|database|mongo|postgres|mysql|redis)([^\/]*)?\.(js|ts|mjs|cjs)$/i,  // filenames with DB term
+];
+
+// WEAK indicators — used only when hasDbDep is true
+// These match too many non-DB repos to be reliable standalone indicators
+const WEAK_INDICATOR_PATTERNS = [
+  /\.env/i,                                             // .env files (almost every repo has these)
+  /(docker-compose|compose\.)/i,                        // docker compose files
+  /(^|[\/])connection\.(js|ts|mjs|cjs)$/i,             // connection.js (could be WebSocket, HTTP, etc.)
+];
+
+// File extensions we care about
+const SCAN_EXTENSIONS = /\.(js|ts|mjs|cjs|prisma|yml|yaml)$/i;
+const ENV_EXTENSIONS = /\.env/;
+const DOCKER_COMPOSE_PATTERN = /docker-compose/;
+
+// Known DB driver repos that should be skipped
+const KNOWN_DB_DRIVER_REPOS = [
+  'node-redis', 'redis',
+  'node-postgres', 'postgres',
+  'node-mysql2', 'mysql2', 'mysql',
+  'mongoose',
+  'sequelize',
+  'prisma',
+  'typeorm',
+  'knex',
+  'mongodb', 'node-mongodb-native',
+];
+
+// Detect if this repo IS a DB driver library itself
+function isDbDriverLibrary(packageJson, repo) {
+  const pkgName = packageJson?.name;
+  if (pkgName) {
+    if (DB_DEPS.includes(pkgName)) return true;
+    if (pkgName.startsWith('@')) {
+      const scopeName = pkgName.split('/')[1];
+      if (scopeName && DB_DEPS.includes(scopeName)) return true;
+    }
+  }
+  if (repo && KNOWN_DB_DRIVER_REPOS.some(name => repo.toLowerCase() === name.toLowerCase())) return true;
+  return false;
+}
+
+export async function check(context) {
+  const { tree, files, packageJson, repoType, repo } = context;
+
+  try {
+    // Skip empty repos and libraries
+    if (repoType === RepoType.EMPTY) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Empty repo — no DB config needed', findings: [] };
+    }
+    if (repoType === RepoType.LIBRARY) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Library — no DB config needed', findings: [] };
+    }
+
+    // Skip DB driver libraries themselves
+    if (isDbDriverLibrary(packageJson, repo)) {
+      const reason = packageJson?.name || repo;
+      return { checkId, status: 'not-applicable', confidence: 'high', message: `DB driver library (${reason}) — not applicable`, findings: [] };
+    }
+
+    const deps = { ...packageJson?.dependencies, ...packageJson?.devDependencies } || {};
+    const hasDbDep = DB_DEPS.some(d => deps[d]);
+
+    if (!hasDbDep) {
+      // When no DB dep: only strong indicators should trigger a scan
+      // Weak indicators (.env, docker-compose) are ignored — they match too many repos
+      const strongMatches = tree.filter(p => {
+        if (!SCAN_EXTENSIONS.test(p)) return false;
+        if (/(test|spec|example|node_modules)/.test(p)) return false;
+        return STRONG_INDICATOR_PATTERNS.some(pat => pat.test(p));
+      });
+
+      if (strongMatches.length === 0) {
+        return { checkId, status: 'not-applicable', confidence: 'medium', message: 'No database dependency or DB-related files found', findings: [] };
+      }
+    }
+
+    // Build prioritized scan list
+    // 1. All .env files (small, fast, high signal)
+    const envFiles = tree.filter(p => {
+      if (!ENV_EXTENSIONS.test(p)) return false;
+      if (/\.(test|spec|fixture|mock)\.env/i.test(p)) return false;
+      if (/\.db\.env$/i.test(p)) return false;
+      return true;
+    });
+
+    // 2. All prisma schema files (high signal)
+    const prismaFiles = tree.filter(p =>
+      /(^|[\/])prisma[\/]/i.test(p) && SCAN_EXTENSIONS.test(p)
+    );
+
+    // 3. Docker compose files
+    const dockerFiles = tree.filter(p =>
+      DOCKER_COMPOSE_PATTERN.test(p) && /\.(yml|yaml)$/.test(p)
+    );
+
+    // 4. Other DB-related files (limited)
+    const scannedSet = new Set([...envFiles, ...prismaFiles, ...dockerFiles]);
+    const otherFiles = tree.filter(p => {
+      if (scannedSet.has(p)) return false;
+      if (/(test|spec|example|node_modules|\.git)/i.test(p)) return false;
+      if (!SCAN_EXTENSIONS.test(p)) return false;
+      return [...STRONG_INDICATOR_PATTERNS, ...WEAK_INDICATOR_PATTERNS]
+        .some(pat => pat.test(p));
+    }).slice(0, 10);
+
+    const sourceFiles = [...envFiles, ...prismaFiles, ...dockerFiles, ...otherFiles]
+      .slice(0, 20);
+
+    let foundGood = false;
+    let foundBad = false;
+    const findings = [];
+
+    for (const filePath of sourceFiles) {
+      const content = await files.get(filePath);
+      if (!content) continue;
+
+      // Check for GOOD patterns (env vars)
+      for (const pattern of GOOD_PATTERNS) {
+        if (pattern.test(content)) {
+          foundGood = true;
+          const lines = content.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (pattern.test(lines[i])) {
+              findings.push({
+                file: filePath,
+                line: i + 1,
+                issue: 'DB config uses environment variables',
+                severity: 'info',
+              });
+              break;
+            }
+          }
+        }
+      }
+
+      // Check for BAD patterns (hardcoded credentials)
+      // Skip .env.* templates and docker-compose (dev defaults, not production secrets)
+      const isEnvTemplate = /\.env\./i.test(filePath);
+      const isDockerCompose = /docker-compose|compose\./i.test(filePath);
+      if (!isEnvTemplate && !isDockerCompose) {
+        for (const pattern of BAD_PATTERNS) {
+          const matches = content.match(new RegExp(pattern.source, 'gmi'));
+          if (matches) {
+            foundBad = true;
+            const lines = content.split('\n');
+            for (const matchStr of matches.slice(0, 3)) {
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(matchStr.substring(0, 40))) {
+                  findings.push({
+                    file: filePath,
+                    line: i + 1,
+                    issue: 'Hardcoded DB connection string with credentials',
+                    severity: 'critical',
+                  });
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Decision logic
+    if (foundGood && !foundBad) {
+      return { checkId, status: 'pass', confidence: 'high', message: 'DB configured with environment variables', findings };
+    }
+    if (foundBad && !foundGood) {
+      return { checkId, status: 'fail', confidence: 'high', message: 'Hardcoded DB credentials detected', findings };
+    }
+    if (foundBad && foundGood) {
+      return { checkId, status: 'fail', confidence: 'high', message: 'Hardcoded DB credentials detected alongside some env var usage', findings };
+    }
+    if (hasDbDep) {
+      return { checkId, status: 'check-it', confidence: 'medium', message: 'DB dependency found but could not verify config (no recognized patterns)', findings: [] };
+    }
+    return { checkId, status: 'check-it', confidence: 'low', message: 'Could not determine DB configuration', findings: [] };
+
+  } catch (err) {
+    return { checkId, status: 'check-it', confidence: 'low', message: `Error: ${err.message}`, findings: [] };
+  }
+}
