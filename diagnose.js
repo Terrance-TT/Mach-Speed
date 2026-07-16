@@ -78,14 +78,22 @@ async function diagnose() {
       const pkg = await fetchFile(r.owner, r.repo, branch, 'package.json');
       if (pkg) try { packageJson = JSON.parse(pkg); } catch { }
 
-      const { classifyRepo } = await import('./classifier.js');
+      const { classifyRepo, classifyRepoDebug } = await import('./classifier.js');
       const result = await classifyRepo(tree, packageJson);
       const pass = result === r.expected;
       if (!pass) failures.push(`${r.owner}/${r.repo}: got "${result}", expected "${r.expected}"`);
 
       const icon = pass ? '✅' : '❌';
       console.log(`  ${icon} ${r.owner}/${r.repo} → ${result} (expected: ${r.expected})`);
-      if (!pass) console.log(`     ${r.note}`);
+      if (!pass) {
+        console.log(`     ${r.note}`);
+        // Print debug scores
+        try {
+          const debug = await classifyRepoDebug(tree, packageJson);
+          console.log(`     Scores: ${JSON.stringify(debug.scores)}`);
+          console.log(`     Signals: ${JSON.stringify(debug.signals)}`);
+        } catch { /* ignore debug errors */ }
+      }
     } catch (err) {
       failures.push(`${r.owner}/${r.repo}: ERROR - ${err.message}`);
       console.log(`  ❌ ${r.owner}/${r.repo} → ERROR: ${err.message}`);
