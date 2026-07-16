@@ -118,20 +118,38 @@ async function isMonorepo(pkg, tree, files) {
 export async function check(context) {
   const { tree, files, repoType, owner, repo } = context;
 
-  // ── AGGRESSIVE FALLBACK: always try files.get when packageJson is null ──
-  // Don't trust files.has() — tree may be incomplete or package.json may be
-  // at an unexpected path. Try directly and catch errors.
+  // ── AGGRESSIVE FALLBACK: packageJson is null, try everything ──
   let packageJson = context.packageJson;
-  if (!packageJson && files) {
-    for (const path of ['package.json', 'package.jsonc']) {
+
+  if (!packageJson) {
+    // Attempt 1: engine's files.get() — fastest if available
+    if (files && typeof files.get === 'function') {
       try {
-        const raw = await files.get(path);
-        if (raw) {
-          packageJson = JSON.parse(raw);
-          break;
-        }
-      } catch {
-        // Try next path or leave packageJson as null
+        const raw = await files.get('package.json');
+        if (raw) packageJson = JSON.parse(raw);
+      } catch { /* ignore, try next */ }
+    }
+
+    // Attempt 2: direct fetch from raw.githubusercontent.com
+    // This bypasses any issues with the engine's files object
+    if (!packageJson && owner && repo) {
+      for (const branch of ['HEAD', 'main', 'master']) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const res = await fetch(
+            `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/package.json`,
+            { signal: controller.signal }
+          );
+          clearTimeout(timeout);
+          if (res.ok) {
+            const text = await res.text();
+            if (text) {
+              packageJson = JSON.parse(text);
+              break;
+            }
+          }
+        } catch { /* ignore, try next branch */ }
       }
     }
   }
