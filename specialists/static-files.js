@@ -56,7 +56,8 @@ export async function check(context) {
 
   try {
     // Skip repo types where static file serving is not relevant
-    if (repoType === RepoType.LIBRARY || repoType === RepoType.EMPTY || repoType === RepoType.FRAMEWORK) {
+    // Note: FRAMEWORK is already filtered out by appliesTo + shouldRun()
+    if (repoType === RepoType.LIBRARY || repoType === RepoType.EMPTY) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'Static file serving not applicable', findings: [] };
     }
 
