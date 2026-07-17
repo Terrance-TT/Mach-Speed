@@ -465,8 +465,15 @@ export class GitHubApi {
   async openOrUpdatePr(branch, title, body) {
     const pulls = await this.req('GET', `${this.base}/pulls?head=${this.owner}:${encodeURIComponent(branch)}&state=open`);
     if (pulls && pulls.length > 0) return { url: pulls[0].html_url, number: pulls[0].number, existed: true };
-    const pr = await this.req('POST', `${this.base}/pulls`, { title, head: branch, base: 'main', body });
-    return { url: pr.html_url, number: pr.number, existed: false };
+    try {
+      const pr = await this.req('POST', `${this.base}/pulls`, { title, head: branch, base: 'main', body });
+      return { url: pr.html_url, number: pr.number, existed: false };
+    } catch (err) {
+      if (/403|not permitted|forbidden/i.test(err.message)) {
+        throw new Error(`cannot create pull request (403). Fix: repo Settings → Actions → General → Workflow permissions → enable "Allow GitHub Actions to create and approve pull requests". Original error: ${err.message}`);
+      }
+      throw err;
+    }
   }
   async commentOnPr(number, body) {
     await this.req('POST', `${this.base}/issues/${number}/comments`, { body });
