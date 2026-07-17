@@ -43,7 +43,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ── Config ──
 const DEFAULT_BASE_URL = 'https://api.moonshot.ai/v1';
 const MODEL_CANDIDATES = ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.5', 'kimi-latest'];
-const TEMPERATURE = 0.3;
+const TEMPERATURE = 1; // the current Kimi catalog rejects anything else ("only 1 is allowed for this model")
 const MAX_THREAD_MESSAGES = 2;     // prior exchanges kept per specialist (bounds token cost)
 const CALL_SPACING_MS = 1_500;     // polite spacing between Moonshot calls
 export const STATE_BRANCH = 'auto-fix-state';
@@ -201,12 +201,17 @@ export class Moonshot {
         }
 
         const body = await res.text().catch(() => '');
-        // Unknown model id -> try the next candidate. But if this model came from the
-        // account's OWN /models list, "not found" is implausible — it's the
-        // "Permission denied" half of Moonshot's bundled message. Permission is
-        // account-wide: trying other candidates is pointless, fail fast.
-        if ((res.status === 400 || res.status === 404) && /model/i.test(body)) {
-          if (this._modelConfirmed && model === this.model && /not found|permission|denied|not allowed|forbidden|unavailable|activate|access/i.test(body)) {
+        // Genuine "model not found / no access" errors -> try the next candidate.
+        // Match Moonshot's exact wording — a loose /model/i test would also catch
+        // unrelated 400s like "invalid temperature ... for this model" and chain
+        // pointlessly through every candidate.
+        const modelNotFound = (res.status === 400 || res.status === 404)
+          && /not found the model|permission denied|resource_not_found/i.test(body);
+        if (modelNotFound) {
+          // If this model came from the account's OWN /models list, "not found" is
+          // implausible — it's a permission problem. Permission is account-wide:
+          // trying other candidates is pointless, fail fast.
+          if (this._modelConfirmed && model === this.model) {
             const fatal = new Error(`Moonshot refuses to run '${model}' even though the account itself listed it (HTTP ${res.status}): ${body.slice(0, 200)}`);
             fatal.fatalPermission = true;
             throw fatal;
