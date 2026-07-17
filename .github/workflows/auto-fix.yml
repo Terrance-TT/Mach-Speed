@@ -1,0 +1,44 @@
+name: Auto-Fix
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # every night at 03:00 UTC
+  workflow_dispatch:       # plus a manual "Run workflow" button
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  heal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run auto-heal (fresh evidence)
+        run: node auto-heal.js --output ./evidence
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        timeout-minutes: 15
+
+      - name: Run auto-fix (Moonshot API + PRs)
+        run: node auto-fix.js --evidence ./evidence --pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          MOONSHOT_MODEL: kimi-k2.6
+        timeout-minutes: 30
+
+      - name: Upload auto-fix report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: auto-fix-report
+          path: autofix-report.*
+          retention-days: 30
