@@ -50,8 +50,14 @@ export function installFetchMiddleware({
   const origFetch = globalThis.fetch;
 
   globalThis.fetch = async (url, opts = {}) => {
+    // Only GitHub API calls get auth + retry treatment. Other services (e.g.
+    // Moonshot) have their own clients with their own backoff — stacking a
+    // second retry layer on top turns one 429 into a request storm.
+    if (typeof url !== 'string' || !url.includes('api.github.com')) {
+      return origFetch(url, opts);
+    }
     const headers = { ...(opts.headers || {}) };
-    if (token && typeof url === 'string' && url.includes('api.github.com')) {
+    if (token) {
       headers.Authorization = `Bearer ${token}`;
       headers['X-GitHub-Api-Version'] = '2022-11-28';
     }
