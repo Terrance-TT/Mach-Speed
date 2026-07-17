@@ -19,15 +19,15 @@
 // Safety rails:
 //   - REFUSES to run on INCOMPLETE evidence (report.json incomplete:true)
 //   - Never pushes to main — only auto-fix/* branches + pull requests
-//   - Model fallback: if the configured model id is unknown to the API, tries
-//     known K2 ids in order and logs which one worked
+//   - Model selection: auto-discovers the account's models (GET /v1/models) and
+//     picks the best kimi model; falls back to a built-in list if discovery fails
 //   - Rate limits (429): waits out the per-minute window instead of hammering,
 //     and aborts the run early if the account stays throttled (trial tiers!)
 //
 // Env:
 //   MOONSHOT_API_KEY   (required, except --dry-run)
 //   MOONSHOT_BASE_URL  default https://api.moonshot.ai/v1  (China: https://api.moonshot.cn/v1)
-//   MOONSHOT_MODEL     default kimi-k2.6 (falls back automatically if unknown)
+//   MOONSHOT_MODEL     optional override (auto-detected from your account when unset or unavailable)
 //   GITHUB_TOKEN       (required for --pr and remote threads; Actions provides it)
 //   GITHUB_REPOSITORY  owner/repo (Actions provides it; or use --repo owner/name)
 
@@ -40,7 +40,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── Config ──
 const DEFAULT_BASE_URL = 'https://api.moonshot.ai/v1';
-const MODEL_CANDIDATES = ['kimi-k2.6', 'kimi-k2-0905-preview', 'kimi-k2-turbo-preview', 'kimi-k2-0711-preview', 'kimi-latest'];
+const MODEL_CANDIDATES = ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.5', 'kimi-latest'];
 const TEMPERATURE = 0.3;
 const MAX_THREAD_MESSAGES = 2;     // prior exchanges kept per specialist (bounds token cost)
 const CALL_SPACING_MS = 1_500;     // polite spacing between Moonshot calls
@@ -77,9 +77,52 @@ export class Moonshot {
     return [...new Set([...configured, ...MODEL_CANDIDATES])];
   }
 
+  // Ask the account which models it actually has, instead of guessing names.
+  async discoverModels() {
+    if (this._discovered !== undefined) return this._discovered;
+    try {
+      const res = await fetch(`${this.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const ids = (Array.isArray(data?.data) ? data.data : []).map((m) => m && m.id).filter(Boolean);
+      this._discovered = ids.length ? ids : null;
+    } catch (err) {
+      console.warn(`    [moonshot] model discovery failed (${err.message}) — falling back to built-in candidate list`);
+      this._discovered = null;
+    }
+    return this._discovered;
+  }
+
+  // Resolve once, on first use: prefer the configured model if the account has
+  // it, otherwise the best available kimi model. Returns null if discovery
+  // failed — chat() then walks the candidate chain as before.
+  async resolveModel() {
+    if (this.model) return this.model;
+    const available = await this.discoverModels();
+    if (available) {
+      console.log(`    [moonshot] models on this account: ${available.join(', ')}`);
+      const configured = process.env.MOONSHOT_MODEL;
+      const pick = this.candidates().find((m) => available.includes(m))
+        || available.find((id) => /kimi/i.test(id))
+        || available[0];
+      if (configured && configured !== pick) {
+        console.warn(`    [moonshot] configured model '${configured}' is not available on this account — using '${pick}'`);
+      } else {
+        console.log(`    [moonshot] model resolved: ${pick}`);
+      }
+      this.model = pick;
+    }
+    return this.model;
+  }
+
   async chat(messages, { maxRetries = 4 } = {}) {
     if (!this.apiKey) throw new Error('MOONSHOT_API_KEY is not set');
-    const models = this.model ? [this.model] : this.candidates();
+    await this.resolveModel();
+    const models = this.model
+      ? [this.model, ...this.candidates().filter((m) => m !== this.model)]
+      : this.candidates();
     let lastErr = null;
 
     for (const model of models) {
@@ -126,6 +169,11 @@ export class Moonshot {
         }
         if (res.status === 401 || res.status === 403) {
           throw new Error(`Moonshot auth failed (HTTP ${res.status}) — check MOONSHOT_API_KEY. ${body.slice(0, 160)}`);
+        }
+        // Any other 400 is a permanent client error — retrying cannot help, so
+        // fail fast and surface the body (this is how we diagnose request-shape issues).
+        if (res.status === 400) {
+          throw new Error(`Moonshot bad request (HTTP 400): ${body.slice(0, 300)}`);
         }
         // 429 rate limit -> wait out the per-minute window (honor retry-after if given)
         if (res.status === 429) {
