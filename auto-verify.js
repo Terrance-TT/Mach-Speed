@@ -592,6 +592,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
       }
       console.log(`\n  Phase 3.${round}: sending ${needsRetry.length} rejection(s) back to Moonshot for another attempt`);
       active = [];
+      let rateLimitedOut = false;
       for (const loser of needsRetry) {
         const { checkId } = loser;
         const s = state.get(checkId);
@@ -630,7 +631,16 @@ export async function autoverify(argv = process.argv.slice(2)) {
           console.error(`    [${checkId}] feedback call failed: ${err.message}`);
           s.reasons = [`moonshot error: ${err.message}`];
           feedbackOnly.push(checkId);
+          if (/429|rate limit/i.test(err.message)) rateLimitedOut = true;
         }
+      }
+      if (rateLimitedOut) {
+        console.error('    Moonshot rate limit persists — ending retries; untested candidates are reported, never merged.');
+        for (const id of [...new Set([...feedbackOnly, ...active])]) {
+          finalLosers.push({ checkId: id, reasons: state.get(id).reasons.length ? state.get(id).reasons : ['aborted: moonshot rate limit'], untested: true, ...blankMetrics() });
+        }
+        active = []; feedbackOnly = [];
+        break;
       }
       // Next loop iteration sweeps `active` (if any) and routes `feedbackOnly`
       // straight back into the feedback phase — no test sweep is wasted on
