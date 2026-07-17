@@ -30,7 +30,7 @@ jobs:
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           MOONSHOT_MODEL: kimi-k2.6
         run: node auto-fix.js --evidence ./evidence --out ./proposed --max-fixes 8
-        timeout-minutes: 60
+        timeout-minutes: 90
       - name: Run auto-verify (test, retry, merge only verified winners)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
