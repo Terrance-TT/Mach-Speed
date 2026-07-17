@@ -127,6 +127,36 @@ export class Moonshot {
     return this.model;
   }
 
+  // Moonshot runs TWO separate platforms: api.moonshot.ai (international) and
+  // api.moonshot.cn (China). A key from one can authenticate and list models on
+  // the other but cannot run inference there — the classic "listed but denied"
+  // symptom. If that happens, probe the other region and switch if it works.
+  async tryAlternateRegion() {
+    const alt = this.baseUrl.includes('moonshot.cn') ? 'https://api.moonshot.ai/v1' : 'https://api.moonshot.cn/v1';
+    try {
+      const listRes = await fetch(`${alt}/models`, { headers: { Authorization: `Bearer ${this.apiKey}` } });
+      if (!listRes.ok) return false;
+      const data = await listRes.json();
+      const ids = (Array.isArray(data?.data) ? data.data : []).map((m) => m && m.id).filter(Boolean);
+      const pick = this.candidates().find((m) => ids.includes(m)) || ids.find((id) => /kimi/i.test(id)) || ids[0];
+      if (!pick) return false;
+      const res = await fetch(`${alt}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify({ model: pick, messages: [{ role: 'user', content: 'ok' }], temperature: TEMPERATURE }),
+      });
+      if (!res.ok) return false;
+      console.warn(`    [moonshot] key works on ${alt} — auto-switching region (set the MOONSHOT_BASE_URL secret to ${alt} to make this permanent)`);
+      this.baseUrl = alt;
+      this._discovered = ids;
+      this.model = pick;
+      this._modelConfirmed = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async chat(messages, { maxRetries = 4 } = {}) {
     if (!this.apiKey) throw new Error('MOONSHOT_API_KEY is not set');
     await this.resolveModel();
@@ -176,12 +206,12 @@ export class Moonshot {
         // "Permission denied" half of Moonshot's bundled message. Permission is
         // account-wide: trying other candidates is pointless, fail fast.
         if ((res.status === 400 || res.status === 404) && /model/i.test(body)) {
-          if (this._modelConfirmed && model === this.model && /permission denied/i.test(body)) {
-            const fatal = new Error(`Moonshot permission denied for '${model}' (a model the account itself listed). The key authenticates but cannot run inference. ${body.slice(0, 200)}`);
+          if (this._modelConfirmed && model === this.model && /not found|permission|denied|not allowed|forbidden|unavailable|activate|access/i.test(body)) {
+            const fatal = new Error(`Moonshot refuses to run '${model}' even though the account itself listed it (HTTP ${res.status}): ${body.slice(0, 200)}`);
             fatal.fatalPermission = true;
             throw fatal;
           }
-          console.warn(`    [moonshot] model "${model}" not available (${res.status}); trying next candidate`);
+          console.warn(`    [moonshot] model "${model}" not available (${res.status}): ${body.slice(0, 120)}`);
           lastErr = new Error(`model ${model}: HTTP ${res.status} ${body.slice(0, 160)}`);
           break;
         }
@@ -494,16 +524,22 @@ export async function autofix(argv = process.argv.slice(2)) {
     console.log(`  Moonshot preflight OK — using model: ${moonshot.model}`);
   } catch (err) {
     if (err.fatalPermission) {
-      console.error('\n  MOONSHOT PERMISSION DENIED — account problem, not a code problem.');
-      console.error(`  Key ${moonshot.fingerprint()} authenticates (the model list call works) but is not`);
-      console.error('  allowed to run ANY model — including models the account itself lists. To fix:');
-      console.error('    1. Check balance/billing in the console: https://platform.moonshot.ai/console');
-      console.error('    2. Create a NEW API key (old one may be restricted or revoked)');
-      console.error('    3. Update the GitHub repo secret MOONSHOT_API_KEY with the new key');
-      console.error('    4. Re-run this workflow. Nothing was changed; threads keep their memory.\n');
-      process.exit(3);
-    }
-    if (/429|rate limit/i.test(err.message)) {
+      // Most common cause: the key belongs to the OTHER Moonshot platform
+      // (.ai vs .cn). Probe it before giving up — maybe we can self-heal.
+      console.warn(`  Inference denied on ${moonshot.baseUrl} — probing the other Moonshot region...`);
+      if (await moonshot.tryAlternateRegion()) {
+        console.log(`  Moonshot preflight OK on alternate region — using model: ${moonshot.model}`);
+      } else {
+        console.error('\n  MOONSHOT PERMISSION DENIED — account problem, not a code problem.');
+        console.error(`  Key ${moonshot.fingerprint()} authenticates (the model list call works) but cannot`);
+        console.error('  run ANY model on EITHER Moonshot platform (.ai or .cn). To fix:');
+        console.error('    1. Check which console your account lives on: platform.moonshot.ai vs platform.moonshot.cn');
+        console.error('    2. Check balance/billing there (inference requires a positive balance)');
+        console.error('    3. If the console is .cn, add a GitHub secret MOONSHOT_BASE_URL = https://api.moonshot.cn/v1');
+        console.error('    4. Re-run this workflow. Nothing was changed; threads keep their memory.\n');
+        process.exit(3);
+      }
+    } else if (/429|rate limit/i.test(err.message)) {
       console.warn('  Preflight hit the rate limit — the key has inference permission; proceeding (calls pace themselves).');
     } else {
       throw err;
