@@ -1,0 +1,496 @@
+#!/usr/bin/env node
+// auto-fix.js — closes the self-heal loop: sends specialist evidence to the Moonshot API,
+// validates the returned rewrite, and opens one PR per fixed specialist.
+//
+// Usage:
+//   node auto-fix.js --evidence ./evidence [--dry-run] [--only cors,dynamic-port]
+//                    [--out ./proposed] [--pr] [--max-fixes 8] [--retries 1]
+//
+// What it does (per flagged specialist):
+//   1. Reads evidence/<checkId>.md + the current specialists/<checkId>.js
+//   2. Sends both (plus the specialist contract/ground rules) to Moonshot (kimi-k2)
+//      as a PERSISTENT thread — one conversation per specialist, kept on the
+//      `auto-fix-state` branch (threads/<checkId>.json), like the manual Kimi chats
+//   3. Extracts the returned module, then validates: contract exports present,
+//      `node --check` passes, test-harness.js passes
+//   4. Valid  -> proposed/<checkId>.js (locally) or a PR branch auto-fix/<checkId> (--pr)
+//      Invalid -> one retry with the failure fed back into the thread
+//
+// Safety rails:
+//   - REFUSES to run on INCOMPLETE evidence (report.json incomplete:true)
+//   - Never pushes to main — only auto-fix/* branches + pull requests
+//   - Model fallback: if the configured model id is unknown to the API, tries
+//     known K2 ids in order and logs which one worked
+//
+// Env:
+//   MOONSHOT_API_KEY   (required, except --dry-run)
+//   MOONSHOT_BASE_URL  default https://api.moonshot.ai/v1  (China: https://api.moonshot.cn/v1)
+//   MOONSHOT_MODEL     default kimi-k2.6 (falls back automatically if unknown)
+//   GITHUB_TOKEN       (required for --pr and remote threads; Actions provides it)
+//   GITHUB_REPOSITORY  owner/repo (Actions provides it; or use --repo owner/name)
+
+import fs from 'fs';
+import path from 'path';
+import { execFileSync } from 'child_process';
+import { installFetchMiddleware } from './auto-heal.js';
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── Config ──
+const DEFAULT_BASE_URL = 'https://api.moonshot.ai/v1';
+const MODEL_CANDIDATES = ['kimi-k2.6', 'kimi-k2-0905-preview', 'kimi-k2-turbo-preview', 'kimi-k2-0711-preview', 'kimi-latest'];
+const TEMPERATURE = 0.3;
+const MAX_THREAD_MESSAGES = 4;     // prior exchanges kept per specialist (bounds token cost)
+const CALL_SPACING_MS = 1_500;     // polite spacing between Moonshot calls
+const STATE_BRANCH = 'auto-fix-state';
+
+// ── CLI parsing ──
+function parseArgs(argv) {
+  const opt = { evidence: './evidence', out: './proposed', pr: false, dryRun: false, maxFixes: 8, retries: 1, only: null, repo: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--evidence') opt.evidence = argv[++i];
+    else if (a === '--out') opt.out = argv[++i];
+    else if (a === '--pr') opt.pr = true;
+    else if (a === '--dry-run') opt.dryRun = true;
+    else if (a === '--max-fixes') opt.maxFixes = Number(argv[++i]);
+    else if (a === '--retries') opt.retries = Number(argv[++i]);
+    else if (a === '--only') opt.only = argv[++i].split(',').map(s => s.trim()).filter(Boolean);
+    else if (a === '--repo') opt.repo = argv[++i];
+  }
+  return opt;
+}
+
+// ── Moonshot API ──
+class Moonshot {
+  constructor() {
+    this.apiKey = process.env.MOONSHOT_API_KEY || null;
+    this.baseUrl = (process.env.MOONSHOT_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '');
+    this.model = null; // resolved on first call
+    this.usage = { prompt_tokens: 0, completion_tokens: 0, calls: 0 };
+  }
+
+  candidates() {
+    const configured = process.env.MOONSHOT_MODEL ? [process.env.MOONSHOT_MODEL] : [];
+    return [...new Set([...configured, ...MODEL_CANDIDATES])];
+  }
+
+  async chat(messages, { maxRetries = 4 } = {}) {
+    if (!this.apiKey) throw new Error('MOONSHOT_API_KEY is not set');
+    const models = this.model ? [this.model] : this.candidates();
+    let lastErr = null;
+
+    for (const model of models) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        let res;
+        try {
+          res = await fetch(`${this.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
+            body: JSON.stringify({ model, messages, temperature: TEMPERATURE }),
+          });
+        } catch (err) {
+          lastErr = err;
+          console.warn(`    [moonshot] network error (${err.message}); retry ${attempt}/${maxRetries}`);
+          await sleep(2000 * attempt);
+          continue;
+        }
+
+        if (res.ok) {
+          const data = await res.json();
+          const content = data?.choices?.[0]?.message?.content;
+          if (typeof content !== 'string' || !content.trim()) {
+            lastErr = new Error('Moonshot returned an empty completion');
+            break; // no point retrying same model immediately
+          }
+          if (!this.model) {
+            this.model = model;
+            console.log(`    [moonshot] model resolved: ${model}`);
+          }
+          if (data.usage) {
+            this.usage.prompt_tokens += data.usage.prompt_tokens || 0;
+            this.usage.completion_tokens += data.usage.completion_tokens || 0;
+          }
+          this.usage.calls++;
+          return content;
+        }
+
+        const body = await res.text().catch(() => '');
+        // Unknown model id -> try the next candidate
+        if ((res.status === 400 || res.status === 404) && /model/i.test(body)) {
+          console.warn(`    [moonshot] model "${model}" not available (${res.status}); trying next candidate`);
+          lastErr = new Error(`model ${model}: HTTP ${res.status} ${body.slice(0, 160)}`);
+          break;
+        }
+        if (res.status === 401 || res.status === 403) {
+          throw new Error(`Moonshot auth failed (HTTP ${res.status}) — check MOONSHOT_API_KEY. ${body.slice(0, 160)}`);
+        }
+        // 429 / 5xx -> backoff and retry same model
+        lastErr = new Error(`Moonshot HTTP ${res.status}: ${body.slice(0, 160)}`);
+        console.warn(`    [moonshot] HTTP ${res.status}; retry ${attempt}/${maxRetries}`);
+        await sleep(4000 * attempt);
+      }
+    }
+    throw lastErr || new Error('Moonshot call failed for all model candidates');
+  }
+}
+
+// ── Prompt construction (mirrors the manual specialist chats) ──
+const SYSTEM_PROMPT = `You are a specialist-fixer for Mach-Speed, a modular static analysis engine that scans GitHub repos for deployment readiness. You rewrite ONE specialist module per request.
+
+OUTPUT RULES (strict):
+- Reply with ONLY the complete rewritten module in a single \`\`\`javascript code block.
+- No prose, no explanation, no extra code blocks — just the one block.
+- The module must be self-contained (no new dependencies) and follow the contract exactly.`;
+
+function buildFixPrompt(checkId, evidenceMd, currentCode) {
+  return `# YOUR CONTRACT
+Every specialist MUST export these 4 things:
+- checkId: unique string ID (keep it EXACTLY '${checkId}')
+- name: human-readable name (keep the existing one)
+- appliesTo: array of repo types this runs on (keep the existing array)
+- check(context): async function that returns { checkId, status, confidence, message, findings }
+
+Repo types: 'empty', 'library', 'deployable', 'server', 'framework', 'tool', 'unknown'
+Statuses: 'pass', 'fail', 'check-it', 'not-applicable'
+Confidences: 'high', 'medium', 'low'
+findings: array of { file, line?, issue }
+
+The context object gives you:
+- tree: array of ALL file paths in the repo (directories included)
+- files: { get(path) => Promise<string|null>, has(path) => boolean } — lazy file loader; get() may return null
+- packageJson: parsed package.json or null
+- repoType: what the classifier decided — IT CAN BE WRONG, sanity-check with your own signals
+- owner, repo: strings
+
+# GROUND RULES
+1. BE DECISIVE — "check-it" is the LAST resort, not the default. Clear evidence -> pass/fail. Check clearly irrelevant -> not-applicable. check-it only when genuinely undecidable, and ALWAYS with findings attached.
+2. LOG ERRORS — catch blocks MUST console.error() the real error before any fallback return.
+3. WORK ACROSS ALL REPO TYPES — libraries, deployable apps, servers, frameworks, tools.
+4. SUPPORT MODERN TOOLING — pnpm workspaces, Turborepo, Vite, Drizzle ORM, Cloudflare Workers/wrangler, Bun, Deno, Nitro, monorepo layouts (apps/*, packages/*).
+5. NO REPO-SPECIFIC HACKS — never check owner/repo names. Logic must generalize to ANY repo.
+6. USE THE TREE — tree.includes() for existence; files.get() only when content is needed. Keep file reads bounded (cap + prioritize).
+7. In the scorecard, check-it scores HALF credit and fail scores ZERO — over-caution and false fails both hurt users.
+
+# EVIDENCE (holistic problems detected across 15 real public repos — fix THESE)
+${evidenceMd}
+
+# CURRENT MODULE CODE (specialists/${checkId}.js)
+\`\`\`javascript
+${currentCode}
+\`\`\`
+
+# YOUR TASK
+Rewrite the module to fix ALL holistic problems in the evidence while preserving the contract exactly (same checkId, name, appliesTo). Return ONLY the complete module in one \`\`\`javascript code block.`;
+}
+
+// ── Response extraction + validation ──
+export function extractModule(text) {
+  const fenced = text.match(/```(?:javascript|js|mjs)?\s*\n([\s\S]*?)```/);
+  if (fenced) return fenced[1].trim();
+  const t = text.trim();
+  if (/^(export|\/\/|\/\*|#!)/.test(t)) return t; // raw module without fence
+  return null;
+}
+
+export function validateModuleSource(checkId, code) {
+  const problems = [];
+  const idRe = new RegExp(`export\\s+const\\s+checkId\\s*=\\s*['"]${checkId}['"]`);
+  if (!idRe.test(code)) problems.push(`missing or wrong export const checkId = '${checkId}'`);
+  if (!/export\s+const\s+name\s*=\s*['"]/.test(code)) problems.push('missing export const name');
+  if (!/export\s+const\s+appliesTo\s*=\s*\[/.test(code)) problems.push('missing export const appliesTo = [...]');
+  if (!/export\s+(async\s+)?function\s+check\s*\(/.test(code)) problems.push('missing export async function check(context)');
+  if (code.length < 500) problems.push('module suspiciously short (<500 chars) — likely truncated');
+  return problems;
+}
+
+// Write to a temp path at the SAME directory level as real specialists so relative
+// imports (../contract.js) resolve identically, then syntax-check and run the
+// contract test-harness against it. Dot-prefixed name => never picked up by central.js.
+function validateModuleRuntime(checkId, code, repoRoot) {
+  const tmpFile = path.join(repoRoot, 'specialists', `.autofix-${checkId}.js`);
+  fs.writeFileSync(tmpFile, code);
+  try {
+    execFileSync(process.execPath, ['--check', tmpFile], { stdio: 'pipe' });
+  } catch (err) {
+    return [`syntax error: ${String(err.stderr || err.message).slice(0, 300)}`];
+  }
+  try {
+    const out = execFileSync(process.execPath, ['test-harness.js', path.join('specialists', `.autofix-${checkId}.js`)], {
+      cwd: repoRoot, stdio: 'pipe', timeout: 60_000,
+    }).toString();
+    if (!/ALL TESTS PASSED/.test(out)) return [`test-harness failed: ${out.slice(-400)}`];
+    return [];
+  } catch (err) {
+    return [`test-harness crashed: ${String(err.stdout || '').slice(-300)} ${String(err.stderr || err.message).slice(0, 300)}`.trim()];
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* best effort */ }
+  }
+}
+
+// ── Thread persistence (local dir, or the auto-fix-state branch in --pr mode) ──
+class ThreadStore {
+  constructor(gh, localDir) {
+    this.gh = gh;           // GitHubApi or null
+    this.localDir = localDir;
+  }
+  async load(checkId) {
+    if (this.gh) {
+      const file = await this.gh.getFile(`threads/${checkId}.json`, STATE_BRANCH);
+      if (file) { try { return JSON.parse(file.content); } catch { /* corrupted -> fresh thread */ } }
+      return [];
+    }
+    try { return JSON.parse(fs.readFileSync(path.join(this.localDir, `${checkId}.json`), 'utf8')); }
+    catch { return []; }
+  }
+  async save(checkId, messages) {
+    // Keep the thread bounded: only the last N messages survive between runs.
+    const trimmed = messages.slice(-MAX_THREAD_MESSAGES);
+    if (this.gh) {
+      await this.gh.putFile(`threads/${checkId}.json`, JSON.stringify(trimmed, null, 2), STATE_BRANCH,
+        `auto-fix: update thread for ${checkId}`);
+      return;
+    }
+    fs.mkdirSync(this.localDir, { recursive: true });
+    fs.writeFileSync(path.join(this.localDir, `${checkId}.json`), JSON.stringify(trimmed, null, 2));
+  }
+}
+
+// ── Minimal GitHub REST helper (uses the fetch middleware from auto-heal.js) ──
+class GitHubApi {
+  constructor(owner, repo) {
+    this.owner = owner;
+    this.repo = repo;
+    this.base = `https://api.github.com/repos/${owner}/${repo}`;
+  }
+  async req(method, url, body) {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new Error(`GitHub ${method} ${url} -> ${res.status}: ${t.slice(0, 200)}`);
+    }
+    return res.json();
+  }
+  async defaultBranchSha() {
+    const data = await this.req('GET', `${this.base}/git/ref/heads/main`);
+    return data.object.sha;
+  }
+  async ensureBranch(branch, fromSha) {
+    const existing = await this.req('GET', `${this.base}/git/ref/heads/${branch}`);
+    if (existing) return existing.object.sha;
+    const created = await this.req('POST', `${this.base}/git/refs`, { ref: `refs/heads/${branch}`, sha: fromSha });
+    return created.object.sha;
+  }
+  async getFile(filePath, ref) {
+    const data = await this.req('GET', `${this.base}/contents/${filePath}?ref=${encodeURIComponent(ref)}`);
+    if (!data || !data.content) return null;
+    return { content: Buffer.from(data.content, 'base64').toString('utf8'), sha: data.sha };
+  }
+  async putFile(filePath, content, branch, message) {
+    const existing = await this.getFile(filePath, branch);
+    await this.req('PUT', `${this.base}/contents/${filePath}`, {
+      message,
+      content: Buffer.from(content, 'utf8').toString('base64'),
+      branch,
+      ...(existing ? { sha: existing.sha } : {}),
+    });
+  }
+  async openOrUpdatePr(branch, title, body) {
+    const pulls = await this.req('GET', `${this.base}/pulls?head=${this.owner}:${encodeURIComponent(branch)}&state=open`);
+    if (pulls && pulls.length > 0) return { url: pulls[0].html_url, existed: true };
+    const pr = await this.req('POST', `${this.base}/pulls`, { title, head: branch, base: 'main', body });
+    return { url: pr.html_url, existed: false };
+  }
+}
+
+// ── Evidence scanning: which specialists need fixing? ──
+export function scanEvidence(evidenceDir) {
+  const reportPath = path.join(evidenceDir, 'report.json');
+  if (!fs.existsSync(reportPath)) {
+    throw new Error(`no report.json in ${evidenceDir} — run auto-heal.js first`);
+  }
+  const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+  if (report.incomplete) {
+    console.error('\n  REFUSING TO FIX: the evidence run was INCOMPLETE (not enough repos analyzed).');
+    console.error('  Fixing from partial evidence would bake in bad conclusions. Re-run auto-heal.js');
+    console.error('  with a GITHUB_TOKEN until the run is complete, then run auto-fix again.\n');
+    process.exit(2);
+  }
+  return (report.specialistReports || [])
+    .filter(r => r.severityScore > 0 && !r.insufficientData)
+    .sort((a, b) => b.severityScore - a.severityScore);
+}
+
+// ── Fix one specialist (Moonshot call + validation + optional retry) ──
+async function fixSpecialist(checkId, severity, evidenceMd, ctx) {
+  const { moonshot, threads, repoRoot, retries } = ctx;
+  const specPath = path.join(repoRoot, 'specialists', `${checkId}.js`);
+  if (!fs.existsSync(specPath)) {
+    return { checkId, ok: false, reason: `specialists/${checkId}.js not found — skipped` };
+  }
+  const currentCode = fs.readFileSync(specPath, 'utf8');
+
+  const thread = await threads.load(checkId);
+  const messages = [{ role: 'system', content: SYSTEM_PROMPT }, ...thread];
+  messages.push({ role: 'user', content: buildFixPrompt(checkId, evidenceMd, currentCode) });
+
+  for (let round = 0; round <= retries; round++) {
+    await sleep(CALL_SPACING_MS);
+    const reply = await moonshot.chat(messages);
+    messages.push({ role: 'assistant', content: reply });
+
+    const code = extractModule(reply);
+    let problems = code ? validateModuleSource(checkId, code) : ['no javascript code block found in the reply'];
+    if (code && problems.length === 0) {
+      problems = validateModuleRuntime(checkId, code, repoRoot);
+    }
+
+    if (problems.length === 0) {
+      await threads.save(checkId, messages.slice(1)); // persist without the system prompt
+      return { checkId, ok: true, code, rounds: round + 1 };
+    }
+
+    console.log(`    [${checkId}] validation failed (round ${round + 1}): ${problems[0]}`);
+    if (round < retries) {
+      messages.push({ role: 'user', content:
+        `Your previous reply failed validation:\n${problems.map(p => `- ${p}`).join('\n')}\n\n` +
+        `Return the COMPLETE corrected module in ONE \`\`\`javascript code block, fixing these issues. No prose.` });
+    } else {
+      await threads.save(checkId, messages.slice(1));
+      return { checkId, ok: false, reason: `validation failed after ${retries + 1} attempt(s): ${problems.join('; ')}` };
+    }
+  }
+}
+
+// ── Main ──
+export async function autofix(argv = process.argv.slice(2)) {
+  const opt = parseArgs(argv);
+  const repoRoot = process.cwd();
+
+  console.log('\n  Mach-Speed Auto-Fix');
+  console.log('  ===================');
+  console.log(`  Evidence: ${opt.evidence} | mode: ${opt.dryRun ? 'dry-run' : opt.pr ? 'PR' : 'local'}`);
+
+  let queue = scanEvidence(opt.evidence);
+  if (opt.only) queue = queue.filter(r => opt.only.includes(r.checkId));
+  queue = queue.slice(0, opt.maxFixes);
+
+  if (queue.length === 0) {
+    console.log('  Nothing to fix — no specialists with patterns. Suite is healthy.');
+    return { fixed: [], failed: [], skipped: [] };
+  }
+  console.log(`  Fix queue (${queue.length}): ${queue.map(r => `${r.checkId}(${r.severityScore})`).join(', ')}\n`);
+  if (opt.dryRun) {
+    for (const r of queue) console.log(`    would fix: ${r.checkId} — severity ${r.severityScore}, patterns: ${r.patterns.join(', ')}`);
+    console.log('\n  Dry run only. Re-run without --dry-run (and with MOONSHOT_API_KEY) to fix.');
+    return { fixed: [], failed: [], skipped: queue.map(r => r.checkId) };
+  }
+
+  installFetchMiddleware(); // auth + retries for api.github.com calls (uses GITHUB_TOKEN)
+  const moonshot = new Moonshot();
+
+  // Threads + PRs need the repo coordinates
+  const repoSlug = opt.repo || process.env.GITHUB_REPOSITORY || null;
+  let gh = null;
+  if (opt.pr || process.env.GITHUB_TOKEN) {
+    if (!repoSlug) throw new Error('need --repo owner/name (or GITHUB_REPOSITORY) for remote threads/PRs');
+    const [owner, repo] = repoSlug.split('/');
+    gh = new GitHubApi(owner, repo);
+  }
+  if (opt.pr && !process.env.GITHUB_TOKEN) throw new Error('--pr needs GITHUB_TOKEN');
+  if (gh && opt.pr) await gh.ensureBranch(STATE_BRANCH, await gh.defaultBranchSha());
+
+  const threads = new ThreadStore(opt.pr ? gh : null, path.join(repoRoot, 'threads'));
+  fs.mkdirSync(opt.out, { recursive: true });
+
+  const fixed = [], failed = [];
+  for (const item of queue) {
+    const { checkId, severityScore } = item;
+    console.log(`  Fixing ${checkId} (severity ${severityScore})...`);
+    const evidenceMd = fs.readFileSync(path.join(opt.evidence, `${checkId}.md`), 'utf8');
+    try {
+      const result = await fixSpecialist(checkId, severityScore, evidenceMd, {
+        moonshot, threads, repoRoot, retries: opt.retries,
+      });
+      if (!result.ok) {
+        console.log(`    [${checkId}] SKIPPED: ${result.reason}`);
+        failed.push({ checkId, reason: result.reason });
+        continue;
+      }
+      fs.writeFileSync(path.join(opt.out, `${checkId}.js`), result.code);
+
+      if (opt.pr && gh) {
+        const branch = `auto-fix/${checkId}`;
+        await gh.ensureBranch(branch, await gh.defaultBranchSha());
+        await gh.putFile(`specialists/${checkId}.js`, result.code, branch,
+          `auto-fix(${checkId}): rewrite from auto-heal evidence (severity ${severityScore})`);
+        const pr = await gh.openOrUpdatePr(branch,
+          `auto-fix(${checkId}): rewrite from auto-heal evidence`,
+          prBody(item, result, moonshot));
+        console.log(`    [${checkId}] ${pr.existed ? 'updated' : 'opened'} PR: ${pr.url}`);
+        fixed.push({ checkId, pr: pr.url, rounds: result.rounds });
+      } else {
+        console.log(`    [${checkId}] OK -> ${opt.out}/${checkId}.js (${result.rounds} round(s))`);
+        fixed.push({ checkId, file: `${opt.out}/${checkId}.js`, rounds: result.rounds });
+      }
+    } catch (err) {
+      console.error(`    [${checkId}] ERROR: ${err.message}`);
+      failed.push({ checkId, reason: err.message });
+    }
+  }
+
+  // ── Report ──
+  const report = {
+    generatedAt: new Date().toISOString(),
+    model: moonshot.model,
+    usage: moonshot.usage,
+    fixed, failed,
+  };
+  fs.writeFileSync('autofix-report.json', JSON.stringify(report, null, 2));
+  const md = [
+    '# Mach-Speed Auto-Fix Report', '',
+    `**Generated:** ${new Date().toUTCString()}`,
+    `**Model:** ${moonshot.model || '(none)'}`,
+    `**Tokens:** ${moonshot.usage.prompt_tokens} in / ${moonshot.usage.completion_tokens} out (${moonshot.usage.calls} calls)`, '',
+    '## Fixed', ...fixed.map(f => `- **${f.checkId}** ${f.pr ? `→ [PR](${f.pr})` : `→ \`${f.file}\``} (${f.rounds} round(s))`), '',
+    '## Failed / skipped', ...(failed.length ? failed.map(f => `- **${f.checkId}** — ${f.reason}`) : ['(none)']), '',
+  ];
+  fs.writeFileSync('autofix-report.md', md.join('\n'));
+
+  console.log(`\n  Done. Fixed: ${fixed.length}, failed/skipped: ${failed.length}.`);
+  console.log(`  Tokens used: ${moonshot.usage.prompt_tokens} in / ${moonshot.usage.completion_tokens} out.`);
+  if (!opt.pr && fixed.length) console.log(`  Review the rewrites in ${opt.out}/ then copy them into specialists/ (or re-run with --pr).`);
+  console.log('');
+  return report;
+}
+
+function prBody(item, result, moonshot) {
+  return [
+    `## Auto-fix: \`${item.checkId}\``,
+    '',
+    `Generated by **auto-fix.js** from auto-heal evidence (${moonshot.model}).`,
+    '',
+    `- **Severity score:** ${item.severityScore}`,
+    `- **Patterns fixed:** ${item.patterns.join(', ')}`,
+    `- **Validation:** contract exports ✓ · \`node --check\` ✓ · test-harness ✓ (${result.rounds} round(s))`,
+    `- **Evidence:** see \`evidence/${item.checkId}.md\` in the auto-heal artifacts`,
+    '',
+    '**Review notes:** the fix is holistic (patterns across 15 public repos), not tuned to any single repo.',
+    'Re-run auto-heal after merging to confirm the patterns are gone.',
+  ].join('\n');
+}
+
+// ── Run only when executed directly ──
+import { pathToFileURL } from 'url';
+const invokedAsScript = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (invokedAsScript) {
+  autofix().catch(err => {
+    console.error('\n  Fatal error:', err.message);
+    process.exit(1);
+  });
+}
