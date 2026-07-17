@@ -21,6 +21,8 @@
 //   - Never pushes to main — only auto-fix/* branches + pull requests
 //   - Model fallback: if the configured model id is unknown to the API, tries
 //     known K2 ids in order and logs which one worked
+//   - Rate limits (429): waits out the per-minute window instead of hammering,
+//     and aborts the run early if the account stays throttled (trial tiers!)
 //
 // Env:
 //   MOONSHOT_API_KEY   (required, except --dry-run)
@@ -40,7 +42,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DEFAULT_BASE_URL = 'https://api.moonshot.ai/v1';
 const MODEL_CANDIDATES = ['kimi-k2.6', 'kimi-k2-0905-preview', 'kimi-k2-turbo-preview', 'kimi-k2-0711-preview', 'kimi-latest'];
 const TEMPERATURE = 0.3;
-const MAX_THREAD_MESSAGES = 4;     // prior exchanges kept per specialist (bounds token cost)
+const MAX_THREAD_MESSAGES = 2;     // prior exchanges kept per specialist (bounds token cost)
 const CALL_SPACING_MS = 1_500;     // polite spacing between Moonshot calls
 export const STATE_BRANCH = 'auto-fix-state';
 
@@ -125,11 +127,22 @@ export class Moonshot {
         if (res.status === 401 || res.status === 403) {
           throw new Error(`Moonshot auth failed (HTTP ${res.status}) — check MOONSHOT_API_KEY. ${body.slice(0, 160)}`);
         }
-        // 429 / 5xx -> backoff and retry same model
+        // 429 rate limit -> wait out the per-minute window (honor retry-after if given)
+        if (res.status === 429) {
+          const retryAfter = Number(res.headers.get('retry-after'));
+          const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 60_000 + attempt * 15_000;
+          lastErr = new Error(`Moonshot rate limit (HTTP 429): ${body.slice(0, 120)}`);
+          console.warn(`    [moonshot] rate-limited; waiting ${Math.round(wait / 1000)}s for the window to reset (attempt ${attempt}/${maxRetries})`);
+          await sleep(wait);
+          continue;
+        }
+        // 5xx -> short backoff and retry same model
         lastErr = new Error(`Moonshot HTTP ${res.status}: ${body.slice(0, 160)}`);
         console.warn(`    [moonshot] HTTP ${res.status}; retry ${attempt}/${maxRetries}`);
         await sleep(4000 * attempt);
       }
+      // Rate limits are account-wide — trying other model candidates just burns time.
+      if (lastErr && /429|rate limit/i.test(lastErr.message)) throw lastErr;
     }
     throw lastErr || new Error('Moonshot call failed for all model candidates');
   }
@@ -456,6 +469,12 @@ export async function autofix(argv = process.argv.slice(2)) {
     } catch (err) {
       console.error(`    [${checkId}] ERROR: ${err.message}`);
       failed.push({ checkId, reason: err.message });
+      if (/429|rate limit/i.test(err.message)) {
+        console.error('\n  ABORTING EARLY: the Moonshot rate limit persists after waiting.');
+        console.error('  Your account tier is throttling requests — check https://platform.moonshot.ai/console/limits');
+        console.error('  Nothing was lost: threads keep their memory and the next scheduled run resumes.');
+        break;
+      }
     }
   }
 
