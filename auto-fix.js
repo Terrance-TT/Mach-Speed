@@ -42,7 +42,7 @@ const MODEL_CANDIDATES = ['kimi-k2.6', 'kimi-k2-0905-preview', 'kimi-k2-turbo-pr
 const TEMPERATURE = 0.3;
 const MAX_THREAD_MESSAGES = 4;     // prior exchanges kept per specialist (bounds token cost)
 const CALL_SPACING_MS = 1_500;     // polite spacing between Moonshot calls
-const STATE_BRANCH = 'auto-fix-state';
+export const STATE_BRANCH = 'auto-fix-state';
 
 // ── CLI parsing ──
 function parseArgs(argv) {
@@ -62,7 +62,7 @@ function parseArgs(argv) {
 }
 
 // ── Moonshot API ──
-class Moonshot {
+export class Moonshot {
   constructor() {
     this.apiKey = process.env.MOONSHOT_API_KEY || null;
     this.baseUrl = (process.env.MOONSHOT_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -136,7 +136,7 @@ class Moonshot {
 }
 
 // ── Prompt construction (mirrors the manual specialist chats) ──
-const SYSTEM_PROMPT = `You are a specialist-fixer for Mach-Speed, a modular static analysis engine that scans GitHub repos for deployment readiness. You rewrite ONE specialist module per request.
+export const SYSTEM_PROMPT = `You are a specialist-fixer for Mach-Speed, a modular static analysis engine that scans GitHub repos for deployment readiness. You rewrite ONE specialist module per request.
 
 OUTPUT RULES (strict):
 - Reply with ONLY the complete rewritten module in a single \`\`\`javascript code block.
@@ -207,7 +207,7 @@ export function validateModuleSource(checkId, code) {
 // Write to a temp path at the SAME directory level as real specialists so relative
 // imports (../contract.js) resolve identically, then syntax-check and run the
 // contract test-harness against it. Dot-prefixed name => never picked up by central.js.
-function validateModuleRuntime(checkId, code, repoRoot) {
+export function validateModuleRuntime(checkId, code, repoRoot) {
   const tmpFile = path.join(repoRoot, 'specialists', `.autofix-${checkId}.js`);
   fs.writeFileSync(tmpFile, code);
   try {
@@ -228,8 +228,8 @@ function validateModuleRuntime(checkId, code, repoRoot) {
   }
 }
 
-// ── Thread persistence (local dir, or the auto-fix-state branch in --pr mode) ──
-class ThreadStore {
+// ── Thread persistence (local dir, or the auto-fix-state branch when a GitHub token is available) ──
+export class ThreadStore {
   constructor(gh, localDir) {
     this.gh = gh;           // GitHubApi or null
     this.localDir = localDir;
@@ -257,7 +257,7 @@ class ThreadStore {
 }
 
 // ── Minimal GitHub REST helper (uses the fetch middleware from auto-heal.js) ──
-class GitHubApi {
+export class GitHubApi {
   constructor(owner, repo) {
     this.owner = owner;
     this.repo = repo;
@@ -302,9 +302,22 @@ class GitHubApi {
   }
   async openOrUpdatePr(branch, title, body) {
     const pulls = await this.req('GET', `${this.base}/pulls?head=${this.owner}:${encodeURIComponent(branch)}&state=open`);
-    if (pulls && pulls.length > 0) return { url: pulls[0].html_url, existed: true };
+    if (pulls && pulls.length > 0) return { url: pulls[0].html_url, number: pulls[0].number, existed: true };
     const pr = await this.req('POST', `${this.base}/pulls`, { title, head: branch, base: 'main', body });
-    return { url: pr.html_url, existed: false };
+    return { url: pr.html_url, number: pr.number, existed: false };
+  }
+  async commentOnPr(number, body) {
+    await this.req('POST', `${this.base}/issues/${number}/comments`, { body });
+  }
+  async mergePr(number) {
+    // Squash-merge: one clean commit on main per specialist, easy to revert.
+    return this.req('PUT', `${this.base}/pulls/${number}/merge`, { merge_method: 'squash' });
+  }
+  async deleteBranch(branch) {
+    await this.req('DELETE', `${this.base}/git/ref/heads/${encodeURIComponent(branch)}`);
+  }
+  async createTag(tag, sha) {
+    await this.req('POST', `${this.base}/git/refs`, { ref: `refs/tags/${tag}`, sha });
   }
 }
 
@@ -403,9 +416,11 @@ export async function autofix(argv = process.argv.slice(2)) {
     gh = new GitHubApi(owner, repo);
   }
   if (opt.pr && !process.env.GITHUB_TOKEN) throw new Error('--pr needs GITHUB_TOKEN');
-  if (gh && opt.pr) await gh.ensureBranch(STATE_BRANCH, await gh.defaultBranchSha());
+  if (gh) await gh.ensureBranch(STATE_BRANCH, await gh.defaultBranchSha());
 
-  const threads = new ThreadStore(opt.pr ? gh : null, path.join(repoRoot, 'threads'));
+  // Remote threads whenever we have repo access — they survive between nights and
+  // are shared with auto-verify.js (which continues the same per-specialist chats).
+  const threads = new ThreadStore(gh, path.join(repoRoot, 'threads'));
   fs.mkdirSync(opt.out, { recursive: true });
 
   const fixed = [], failed = [];
