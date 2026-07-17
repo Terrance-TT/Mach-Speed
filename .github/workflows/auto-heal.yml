@@ -21,6 +21,8 @@ jobs:
         run: node auto-heal.js --output ./evidence
         env:
           NODE_OPTIONS: '--experimental-vm-modules'
+          # auto-heal.js v2 picks this up automatically (60 -> 5000 req/hr, no more 403 cascades)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         timeout-minutes: 10
 
       - name: Upload evidence
