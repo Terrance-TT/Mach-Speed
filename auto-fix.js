@@ -23,6 +23,8 @@
 //     picks the best kimi model; falls back to a built-in list if discovery fails
 //   - Preflight: one tiny inference call before starting; exits with clear
 //     guidance (code 3) if the key lacks inference permission
+//   - Streaming: completions use SSE so multi-minute generations can't die on
+//     idle connection timeouts; 12-minute hard cap per call
 //   - Rate limits (429): waits out the per-minute window instead of hammering,
 //     and aborts the run early if the account stays throttled (trial tiers!)
 //
@@ -46,7 +48,36 @@ const MODEL_CANDIDATES = ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.5',
 const TEMPERATURE = 1; // the current Kimi catalog rejects anything else ("only 1 is allowed for this model")
 const MAX_THREAD_MESSAGES = 2;     // prior exchanges kept per specialist (bounds token cost)
 const CALL_SPACING_MS = 1_500;     // polite spacing between Moonshot calls
+const CALL_TIMEOUT_MS = 12 * 60_000; // hard cap per completion call (streaming makes this generous)
 export const STATE_BRANCH = 'auto-fix-state';
+
+// Read an OpenAI-style SSE stream (data: {...}\n\n ... data: [DONE]) and
+// accumulate the assistant content + final usage (if the provider sends it).
+export async function readSseStream(res) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '', content = '', usage = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const j = JSON.parse(data);
+        const delta = j?.choices?.[0]?.delta?.content;
+        if (typeof delta === 'string') content += delta;
+        if (j?.usage) usage = j.usage;
+      } catch { /* split JSON line — the next chunk completes it */ }
+    }
+  }
+  return { content, usage };
+}
 
 // ── CLI parsing ──
 function parseArgs(argv) {
@@ -168,22 +199,38 @@ export class Moonshot {
     for (const model of models) {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         let res;
+        // Streaming keeps the connection warm while the model thinks — a silent
+        // multi-minute generation gets killed by idle timeouts ("fetch failed"),
+        // which is exactly what happened with non-streaming big-prompt calls.
+        const controller = new AbortController();
+        const hardCap = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
         try {
           res = await fetch(`${this.baseUrl}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
-            body: JSON.stringify({ model, messages, temperature: TEMPERATURE }),
+            body: JSON.stringify({ model, messages, temperature: TEMPERATURE, stream: true }),
+            signal: controller.signal,
           });
         } catch (err) {
-          lastErr = err;
-          console.warn(`    [moonshot] network error (${err.message}); retry ${attempt}/${maxRetries}`);
+          clearTimeout(hardCap);
+          lastErr = err.name === 'AbortError' ? new Error(`Moonshot call exceeded the ${Math.round(CALL_TIMEOUT_MS / 60000)}-minute cap`) : err;
+          console.warn(`    [moonshot] network error (${lastErr.message}); retry ${attempt}/${maxRetries}`);
           await sleep(2000 * attempt);
           continue;
         }
 
         if (res.ok) {
-          const data = await res.json();
-          const content = data?.choices?.[0]?.message?.content;
+          let content = '', usage = null;
+          try {
+            ({ content, usage } = await readSseStream(res));
+          } catch (err) {
+            clearTimeout(hardCap);
+            lastErr = err.name === 'AbortError' ? new Error(`Moonshot stream exceeded the ${Math.round(CALL_TIMEOUT_MS / 60000)}-minute cap`) : err;
+            console.warn(`    [moonshot] stream dropped (${lastErr.message}); retry ${attempt}/${maxRetries}`);
+            await sleep(2000 * attempt);
+            continue;
+          }
+          clearTimeout(hardCap);
           if (typeof content !== 'string' || !content.trim()) {
             lastErr = new Error('Moonshot returned an empty completion');
             break; // no point retrying same model immediately
@@ -192,13 +239,14 @@ export class Moonshot {
             this.model = model;
             console.log(`    [moonshot] model resolved: ${model}`);
           }
-          if (data.usage) {
-            this.usage.prompt_tokens += data.usage.prompt_tokens || 0;
-            this.usage.completion_tokens += data.usage.completion_tokens || 0;
+          if (usage) {
+            this.usage.prompt_tokens += usage.prompt_tokens || 0;
+            this.usage.completion_tokens += usage.completion_tokens || 0;
           }
           this.usage.calls++;
           return content;
         }
+        clearTimeout(hardCap);
 
         const body = await res.text().catch(() => '');
         // Genuine "model not found / no access" errors -> try the next candidate.
