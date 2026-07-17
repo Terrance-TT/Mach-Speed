@@ -21,6 +21,8 @@
 //   - Never pushes to main — only auto-fix/* branches + pull requests
 //   - Model selection: auto-discovers the account's models (GET /v1/models) and
 //     picks the best kimi model; falls back to a built-in list if discovery fails
+//   - Preflight: one tiny inference call before starting; exits with clear
+//     guidance (code 3) if the key lacks inference permission
 //   - Rate limits (429): waits out the per-minute window instead of hammering,
 //     and aborts the run early if the account stays throttled (trial tiers!)
 //
@@ -77,6 +79,13 @@ export class Moonshot {
     return [...new Set([...configured, ...MODEL_CANDIDATES])];
   }
 
+  // Masked key for logs — enough to tell keys apart, safe to print.
+  fingerprint() {
+    if (!this.apiKey) return '(none)';
+    const k = this.apiKey.trim();
+    return k.length > 10 ? `${k.slice(0, 6)}…${k.slice(-4)}` : '(too short to show)';
+  }
+
   // Ask the account which models it actually has, instead of guessing names.
   async discoverModels() {
     if (this._discovered !== undefined) return this._discovered;
@@ -113,6 +122,7 @@ export class Moonshot {
         console.log(`    [moonshot] model resolved: ${pick}`);
       }
       this.model = pick;
+      this._modelConfirmed = true; // came from the account's own /models list
     }
     return this.model;
   }
@@ -161,8 +171,16 @@ export class Moonshot {
         }
 
         const body = await res.text().catch(() => '');
-        // Unknown model id -> try the next candidate
+        // Unknown model id -> try the next candidate. But if this model came from the
+        // account's OWN /models list, "not found" is implausible — it's the
+        // "Permission denied" half of Moonshot's bundled message. Permission is
+        // account-wide: trying other candidates is pointless, fail fast.
         if ((res.status === 400 || res.status === 404) && /model/i.test(body)) {
+          if (this._modelConfirmed && model === this.model && /permission denied/i.test(body)) {
+            const fatal = new Error(`Moonshot permission denied for '${model}' (a model the account itself listed). The key authenticates but cannot run inference. ${body.slice(0, 200)}`);
+            fatal.fatalPermission = true;
+            throw fatal;
+          }
           console.warn(`    [moonshot] model "${model}" not available (${res.status}); trying next candidate`);
           lastErr = new Error(`model ${model}: HTTP ${res.status} ${body.slice(0, 160)}`);
           break;
@@ -468,6 +486,30 @@ export async function autofix(argv = process.argv.slice(2)) {
   installFetchMiddleware(); // auth + retries for api.github.com calls (uses GITHUB_TOKEN)
   const moonshot = new Moonshot();
 
+  // Preflight: one tiny call proves the key can actually run inference BEFORE
+  // we spend time on specialists. Fails fast with actionable guidance.
+  console.log(`  Moonshot key: ${moonshot.fingerprint()} (${moonshot.baseUrl})`);
+  try {
+    await moonshot.chat([{ role: 'user', content: 'Reply with the single word: ok' }], { maxRetries: 1 });
+    console.log(`  Moonshot preflight OK — using model: ${moonshot.model}`);
+  } catch (err) {
+    if (err.fatalPermission) {
+      console.error('\n  MOONSHOT PERMISSION DENIED — account problem, not a code problem.');
+      console.error(`  Key ${moonshot.fingerprint()} authenticates (the model list call works) but is not`);
+      console.error('  allowed to run ANY model — including models the account itself lists. To fix:');
+      console.error('    1. Check balance/billing in the console: https://platform.moonshot.ai/console');
+      console.error('    2. Create a NEW API key (old one may be restricted or revoked)');
+      console.error('    3. Update the GitHub repo secret MOONSHOT_API_KEY with the new key');
+      console.error('    4. Re-run this workflow. Nothing was changed; threads keep their memory.\n');
+      process.exit(3);
+    }
+    if (/429|rate limit/i.test(err.message)) {
+      console.warn('  Preflight hit the rate limit — the key has inference permission; proceeding (calls pace themselves).');
+    } else {
+      throw err;
+    }
+  }
+
   // Threads + PRs need the repo coordinates
   const repoSlug = opt.repo || process.env.GITHUB_REPOSITORY || null;
   let gh = null;
@@ -517,6 +559,10 @@ export async function autofix(argv = process.argv.slice(2)) {
     } catch (err) {
       console.error(`    [${checkId}] ERROR: ${err.message}`);
       failed.push({ checkId, reason: err.message });
+      if (err.fatalPermission) {
+        console.error('\n  ABORTING EARLY: Moonshot permission denied is account-wide — no specialist can succeed.');
+        break;
+      }
       if (/429|rate limit/i.test(err.message)) {
         console.error('\n  ABORTING EARLY: the Moonshot rate limit persists after waiting.');
         console.error('  Your account tier is throttling requests — check https://platform.moonshot.ai/console/limits');
