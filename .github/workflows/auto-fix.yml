@@ -1,44 +1,50 @@
-name: Auto-Fix
-
+name: Auto-Fix + Verify
 on:
   schedule:
-    - cron: '0 3 * * *'   # every night at 03:00 UTC
-  workflow_dispatch:       # plus a manual "Run workflow" button
-
+    - cron: '0 3 * * *'
+  workflow_dispatch:
 permissions:
   contents: write
   pull-requests: write
-
+  issues: write
 jobs:
-  heal:
+  self-heal:
     runs-on: ubuntu-latest
+    timeout-minutes: 150
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Run auto-heal (fresh evidence)
-        run: node auto-heal.js --output ./evidence
+          node-version: 20
+      - name: Run auto-heal (test specialists, generate evidence)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        timeout-minutes: 15
-
-      - name: Run auto-fix (Moonshot API + PRs)
-        run: node auto-fix.js --evidence ./evidence --pr
+        run: node auto-heal.js --output ./evidence
+        timeout-minutes: 25
+      - name: Run auto-fix (AI proposes rewrites — nothing merges yet)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           MOONSHOT_MODEL: kimi-k2.6
-        timeout-minutes: 30
-
-      - name: Upload auto-fix report
-        uses: actions/upload-artifact@v4
+        run: node auto-fix.js --evidence ./evidence --out ./proposed --max-fixes 8
+        timeout-minutes: 25
+      - name: Run auto-verify (test, retry, merge only verified winners)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          MOONSHOT_MODEL: kimi-k2.6
+        run: node auto-verify.js --evidence ./evidence --proposed ./proposed --pr --rounds 2
+        timeout-minutes: 100
+      - name: Upload evidence + reports
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: auto-fix-report
-          path: autofix-report.*
+          name: self-heal-report
+          path: |
+            evidence/
+            proposed/
+            autofix-report.md
+            autofix-report.json
+            verify-report.md
+            verify-report.json
           retention-days: 30
