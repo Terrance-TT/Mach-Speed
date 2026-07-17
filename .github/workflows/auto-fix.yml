@@ -1,8 +1,11 @@
 name: Auto-Fix + Verify
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '0 */4 * * *'   # every 4 hours
   workflow_dispatch:
+concurrency:
+  group: self-heal
+  cancel-in-progress: false
 permissions:
   contents: write
   pull-requests: write
