@@ -674,12 +674,21 @@ export async function autoheal(argv = process.argv.slice(2)) {
   };
   fs.writeFileSync(path.join(outputDir, 'report.json'), JSON.stringify(jsonOutput, null, 2));
 
+  // Full per-repo-per-check results, one JSON object per line. auto-verify.js uses
+  // this as the train-set baseline so it can measure improvement without re-running
+  // the whole train sweep.
+  fs.writeFileSync(
+    path.join(outputDir, 'results.jsonl'),
+    allResults.map(r => JSON.stringify(r)).join('\n') + (allResults.length ? '\n' : '')
+  );
+
   // ── Done ──
   console.log('\n  Auto-heal complete!');
   console.log(`  Evidence files written to: ${outputDir}/`);
   console.log(`  - ${checkIds.length} specialist evidence files`);
   console.log(`  - README.md (master summary)`);
   console.log(`  - report.json (machine-readable)`);
+  console.log(`  - results.jsonl (raw results, consumed by auto-verify.js)`);
   console.log('');
 
   if (incomplete) {
