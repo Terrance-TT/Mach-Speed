@@ -6,6 +6,7 @@ export const appliesTo = ['deployable', 'server', 'framework'];
 
 const HEALTH_LIBS = new Set([
   'lightship', 'terminus', 'express-actuator', 'under-pressure',
+  '@nestjs/terminus', 'healthcheck-middleware', 'koa-healthcheck',
 ]);
 
 const SERVER_DEPS = new Set([
@@ -14,20 +15,85 @@ const SERVER_DEPS = new Set([
   'nitropack', 'nitro', 'h3', 'hono', 'elysia', 'uwebsockets',
 ]);
 
+const META_FRAMEWORKS = new Set([
+  'next', 'nuxt', 'remix', 'solid-start', 'astro', 'qwik-city', 'hono', 'nitro', 'nitropack', 'nuxt-edge',
+]);
+
+const HEALTH_PATH_PATTERNS = [
+  /(^|\/)health\.(js|ts|mjs|cjs|go|py|rs|java|rb|php)$/i,
+  /(^|\/)healthz\.(js|ts|mjs|cjs|go|py|rs|java|rb|php)$/i,
+  /(^|\/)health-check\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)healthcheck\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)status\.(js|ts|mjs|cjs|go|py|rs|java|rb|php)$/i,
+  /(^|\/)ping\.(js|ts|mjs|cjs|go|py|rs|java|rb|php)$/i,
+  /(^|\/)ready\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)alive\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)up\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)livez\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)readyz\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)api\/health\/.*\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)api\/status\/.*\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)api\/ping\/.*\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)api\/ready\/.*\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)pages\/api\/health\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)pages\/api\/status\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)pages\/api\/ping\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)pages\/api\/ready\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)app\/api\/health\/route\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)app\/api\/status\/route\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)app\/health\/route\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)app\/status\/route\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)app\/ready\/route\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)app\/ping\/route\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)routes\/health\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)routes\/status\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)routes\/ping\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)routes\/ready\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)controllers\/health\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)controllers\/status\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)handlers\/health\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)handlers\/status\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)server\/health\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)server\/status\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)health\/route\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)status\/route\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)health\/index\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)status\/index\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)workers\/.*health.*\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)functions\/.*health.*\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)functions\/health\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)functions\/status\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)src\/health\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)src\/status\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)src\/routes\/health\.(js|ts|mjs|cjs)$/i,
+  /(^|\/)src\/routes\/status\.(js|ts|mjs|cjs)$/i,
+];
+
 const HEALTH_CODE_PATTERNS = [
   /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/healthz?\b/i,
+  /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/_?health\b/i,
+  /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/healthcheck\b/i,
   /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/status\b/i,
   /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/ready\b/i,
   /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/alive\b/i,
   /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/ping\b/i,
+  /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/livez?\b/i,
+  /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/readyz?\b/i,
+  /\.(get|post|put|delete|all|use)\s*\(\s*['"`]\/up\b/i,
   /pathname\s*===?\s*['"`]\/health/i,
   /pathname\s*===?\s*['"`]\/status/i,
   /pathname\s*===?\s*['"`]\/ready/i,
+  /pathname\s*===?\s*['"`]\/ping/i,
   /event\.(path|node\.req\.url).*(health|status|ready|alive|ping)/i,
   /@Get\s*\(['"`]health['"`]\)/i,
   /@Controller\s*\(['"`]health['"`]\)/i,
   /lightship|terminus|under-pressure|express-actuator/i,
   /livenessProbe|readinessProbe|startupProbe/i,
+  /health\s*check|healthcheck/i,
+  /router\.(get|post)\s*\(\s*['"`]\/health/i,
+  /app\.(get|post|use)\s*\(\s*['"`]\/health/i,
+  /fastify\.(get|route)\s*\(\s*\{?\s*url\s*:\s*['"`]\/health/i,
+  /new\s+Response\s*\(\s*['"`]ok['"`]/i,
 ];
 
 function hasProductionStartScript(packageJson) {
@@ -57,9 +123,18 @@ function hasDeploymentConfig(tree) {
       /^fly\.toml$/i.test(p) ||
       /^captain-definition$/i.test(p) ||
       /^Procfile$/i.test(p) ||
+      /^app\.yaml$/i.test(p) ||
+      /^render\.yaml$/i.test(p) ||
+      /^railway\.toml$/i.test(p) ||
+      /^wrangler\.toml$/i.test(p) ||
+      /^netlify\.toml$/i.test(p) ||
+      /^vercel\.json$/i.test(p) ||
       /(^|\/)k8s\//i.test(p) ||
       /(^|\/)kubernetes\//i.test(p) ||
-      /(^|\/)helm\//i.test(p);
+      /(^|\/)helm\//i.test(p) ||
+      /(^|\/)cdktf\//i.test(p) ||
+      /(^|\/)terraform\//i.test(p) ||
+      /(^|\/)pulumi\//i.test(p);
   });
 }
 
@@ -67,7 +142,8 @@ function isFrameworkSource(tree, packageJson) {
   const hasPackages = tree.filter(p => /^packages\/[^/]+\/package\.json$/i.test(p)).length >= 2;
   const hasApps = tree.some(p => /^apps\/[^/]+\/package\.json$/i.test(p));
   const hasServices = tree.some(p => /^services\/[^/]+\/package\.json$/i.test(p));
-  const hasDeployables = hasApps || hasServices;
+  const hasWorkers = tree.some(p => /^workers\/[^/]+\/package\.json$/i.test(p));
+  const hasDeployables = hasApps || hasServices || hasWorkers;
 
   if (hasPackages && !hasDeployables) {
     const pkgCount = tree.filter(p => /^packages\/[^/]+\/package\.json$/i.test(p)).length;
@@ -78,7 +154,7 @@ function isFrameworkSource(tree, packageJson) {
   }
 
   if ((packageJson?.main || packageJson?.module || packageJson?.exports) && !hasProductionStartScript(packageJson)) {
-    const hasServerCode = tree.some(p => /^(src\/)?(server|app|main)\.(js|ts|mjs|cjs)$/i.test(p));
+    const hasServerCode = tree.some(p => /^(src\/)?(server|app|main)\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo)/i.test(p));
     const hasApiDir = tree.some(p => /(^|\/)api\/.*\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|example|demo)/i.test(p));
     if (!hasServerCode && !hasApiDir && !hasDeployables) return true;
   }
@@ -89,18 +165,50 @@ function isFrameworkSource(tree, packageJson) {
   return false;
 }
 
-function isTutorialRepo(tree, packageJson) {
+function isTutorialRepo(context, tree, packageJson) {
+  if (isFrameworkSource(tree, packageJson)) return false;
+
+  const repoText = `${context.owner || ''} ${context.repo || ''}`.toLowerCase();
   const name = packageJson?.name || '';
   const desc = packageJson?.description || '';
   const text = `${name} ${desc}`.toLowerCase();
-  if (/\b(learn|tutorial|course|starter[- ]?template|playground|examples?[- ]?app)\b/.test(text)) return true;
+  const fullText = `${repoText} ${text}`;
 
-  const dirs = ['examples', 'example', 'starters', 'starter', 'templates', 'template', 'demos', 'demo', 'playground', 'learn', 'chapters', 'lessons', 'tutorial', 'tutorials', 'course', 'workshop'];
-  let count = 0;
-  for (const d of dirs) {
-    count += tree.filter(p => new RegExp(`^${d}/[^/]+/package\\.json$`, 'i').test(p)).length;
+  if (/\b(learn|tutorial|course|how[- ]?to|playground|starter[- ]?template|examples?[- ]?app|getting[- ]?started|teach|training|workshop|bootcamp|school|walkthrough|guide[- ]?app)\b/.test(fullText)) {
+    return true;
   }
-  if (count >= 2) return true;
+
+  const courseDirs = [
+    'basics', 'dashboard', 'foundations', 'essentials', 'getting-started',
+    'advanced', 'beginner', 'intermediate', 'steps', 'exercises', 'solutions',
+    'chapters', 'lessons', 'tutorial', 'tutorials', 'course', 'workshop',
+    'learn', 'part', 'section', 'unit', 'module', 'demo', 'demos',
+    'example', 'examples', 'starter', 'starters', 'template', 'templates',
+    'playground', 'showcase', '01-', '02-', '03-', '04-', '05-', '06-', '07-', '08-', '09-', '10-'
+  ];
+
+  let courseDirCount = 0;
+  for (const d of courseDirs) {
+    if (tree.some(p => new RegExp(`(^|/)${d}/`, 'i').test(p))) courseDirCount++;
+  }
+  if (courseDirCount >= 2) return true;
+
+  let examplePkgCount = 0;
+  for (const d of courseDirs) {
+    examplePkgCount += tree.filter(p => new RegExp(`(^|/)${d}/[^/]+/package\\.json$`, 'i').test(p)).length;
+  }
+  if (examplePkgCount >= 2 && /\b(example|demo|starter|template|playground|learn|tutorial)\b/.test(fullText)) return true;
+
+  if (hasDeploymentConfig(tree) && hasProductionStartScript(packageJson)) return false;
+
+  const topLevelDirs = new Set(
+    tree
+      .filter(p => p.includes('/') && (p.match(/\//g) || []).length === 1)
+      .map(p => p.split('/')[0].toLowerCase())
+  );
+  const exampleDirNames = new Set(['examples', 'example', 'demos', 'demo', 'playground', 'tutorials', 'tutorial', 'learn', 'starters', 'starter', 'templates', 'template', 'basics', 'dashboard', 'solutions', 'exercises', 'steps']);
+  const isExampleHeavy = [...topLevelDirs].filter(d => exampleDirNames.has(d)).length >= 2;
+  if (isExampleHeavy && !hasProductionStartScript(packageJson)) return true;
 
   return false;
 }
@@ -111,25 +219,36 @@ function isBuildTool(packageJson) {
   return /\b(monorepo|build[- ]?tool|bundler|compiler|task[- ]?runner|orchestrator)\b/.test(text);
 }
 
+function depMatchesMetaFramework(d) {
+  if (META_FRAMEWORKS.has(d)) return true;
+  if (d.includes('remix')) return true;
+  if (d.includes('svelte') && d.includes('kit')) return true;
+  return false;
+}
+
 function isStaticOrPlatformManaged(tree, packageJson) {
   if (!packageJson) return false;
   if (hasDeploymentConfig(tree)) return false;
 
   const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
-  const hasServerDep = Object.keys(deps).some(d => SERVER_DEPS.has(d));
+  const depList = Object.keys(deps);
+  const hasServerDep = depList.some(d => SERVER_DEPS.has(d));
+  const hasMetaFramework = depList.some(depMatchesMetaFramework);
   const hasCustomServer = tree.some(p => /^(server|app|main)\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo)/i.test(p));
-  if (hasCustomServer || hasServerDep) return false;
+  const hasApiRoutes = tree.some(p => /(^|\/)pages\/api\/|(^|\/)app\/.*\/route\./i.test(p));
+  if (hasCustomServer || hasApiRoutes || hasServerDep || hasMetaFramework) return false;
 
   const platformConfigs = ['vercel.json', 'netlify.toml', 'wrangler.toml', 'app.yaml', 'serverless.yml', 'serverless.yaml', 'serverless.json'];
   const hasPlatformConfig = tree.some(p => platformConfigs.includes(p.toLowerCase()));
+  if (hasPlatformConfig) return true;
 
-  const staticConfigs = ['astro.config', 'gatsby-config', 'eleventy.config', '.eleventy.js', 'vuepress.config', 'docusaurus.config'];
+  const staticConfigs = ['astro.config', 'gatsby-config', 'eleventy.config', '.eleventy.js', 'vuepress.config', 'docusaurus.config', 'vite.config', 'rollup.config', 'webpack.config', 'parcel.config'];
   const hasStaticConfig = tree.some(p => {
     const base = p.toLowerCase().split('/').pop();
     return staticConfigs.some(cfg => base.startsWith(cfg));
   });
 
-  return hasPlatformConfig || hasStaticConfig;
+  return hasStaticConfig && !hasServerDep && !hasMetaFramework && !hasCustomServer && !hasApiRoutes;
 }
 
 function scoreServerFile(path) {
@@ -148,24 +267,56 @@ function scoreServerFile(path) {
   return score;
 }
 
-function isClearlyDeployableServer(tree, packageJson) {
-  if (hasDeploymentConfig(tree)) return true;
+function isDeployableServer(tree, packageJson) {
+  if (!packageJson) return false;
 
-  const deps = { ...packageJson?.dependencies, ...packageJson?.devDependencies };
-  const hasServer = Object.keys(deps).some(d => SERVER_DEPS.has(d));
+  const deps = { ...packageJson.dependencies, ...packageJson.devDependencies, ...packageJson.peerDependencies };
+  const depList = Object.keys(deps);
+  const hasServerDep = depList.some(d => SERVER_DEPS.has(d));
+  const hasMetaFramework = depList.some(depMatchesMetaFramework);
   const hasStart = hasProductionStartScript(packageJson);
 
-  const hasApi = tree.some(p => /(^|\/)api\/.*\.(js|ts|mjs|cjs)$/i.test(p) && !/(example|demo|playground|test|__tests__|fixtures?)\//i.test(p));
-  const hasServerEntry = tree.some(p => /^(src\/)?(server|app|main)\.(js|ts|mjs|cjs)$/i.test(p));
-  const hasRoutes = tree.some(p => /(^|\/)routes\/.*\.(js|ts|mjs|cjs)$/i.test(p) && !/(example|demo|playground|test|__tests__|fixtures?)\//i.test(p));
+  const hasDocker = tree.some(p => /(^|\/)dockerfile$/i.test(p) || /(^|\/)dockerfile\./i.test(p));
+  const hasCompose = tree.some(p => /^docker-compose\.(yml|yaml)$/i.test(p));
+  const hasK8s = tree.some(p => /(^|\/)k8s\//i.test(p) || /(^|\/)kubernetes\//i.test(p) || /(^|\/)helm\//i.test(p));
+  const hasProcfile = tree.some(p => /^Procfile$/i.test(p));
+  const hasFly = tree.some(p => /^fly\.toml$/i.test(p));
 
-  return hasServer && hasStart && (hasApi || hasServerEntry || hasRoutes);
+  const hasServerEntry = tree.some(p => /^(src\/)?(server|app|main)\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo|playground|__tests__|fixtures?)\//i.test(p));
+  const hasApiRoutes = tree.some(p => /(^|\/)api\/.*\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo|playground|__tests__|fixtures?)\//i.test(p));
+  const hasPagesApi = tree.some(p => /(^|\/)pages\/api\/.*\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo|playground|__tests__|fixtures?)\//i.test(p));
+  const hasAppRouter = tree.some(p => /(^|\/)app\/.*\/route\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo|playground|__tests__|fixtures?)\//i.test(p));
+  const hasWorkers = tree.some(p => /(^|\/)workers?\/.*\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo|playground|__tests__|fixtures?)\//i.test(p));
+  const hasFunctions = tree.some(p => /(^|\/)functions\/.*\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo|playground|__tests__|fixtures?)\//i.test(p));
+  const hasMiddleware = tree.some(p => /(^|\/)middleware\.(js|ts|mjs|cjs)$/i.test(p) && !/(test|spec|example|demo|playground|__tests__|fixtures?)\//i.test(p));
+
+  const infraSignals = [hasDocker, hasCompose, hasK8s, hasProcfile, hasFly].filter(Boolean).length;
+  const codeSignals = [hasServerEntry, hasApiRoutes, hasPagesApi, hasAppRouter, hasWorkers, hasFunctions, hasMiddleware].filter(Boolean).length;
+
+  if (infraSignals > 0 && (hasStart || hasServerDep || hasMetaFramework)) return true;
+  if (hasServerDep && hasStart) return true;
+  if (hasMetaFramework && hasStart) return true;
+  if (hasMetaFramework && codeSignals > 0) return true;
+  if (hasServerDep && codeSignals > 0) return true;
+  if (hasStart && codeSignals > 0) return true;
+
+  const hasWorkspaceApps = tree.some(p => /^(apps|services|workers)\/[^/]+\/package\.json$/i.test(p));
+  if (hasWorkspaceApps && (hasMetaFramework || hasServerDep || hasStart)) return true;
+
+  return false;
 }
 
 export async function check(context) {
   const { tree, files, packageJson, repoType } = context;
 
   try {
+    for (const pattern of HEALTH_PATH_PATTERNS) {
+      const match = tree.find(p => pattern.test(p) && !/(test|spec|__tests__|fixtures?|examples?\/|demo\/|playground\/)/i.test(p));
+      if (match) {
+        return { checkId, status: 'pass', confidence: 'high', message: `Health endpoint file found: ${match}`, findings: [{ file: match, issue: 'Health route file detected' }] };
+      }
+    }
+
     const healthLib = hasHealthDependency(packageJson);
     if (healthLib) {
       return { checkId, status: 'pass', confidence: 'high', message: `Health check library present: ${healthLib}`, findings: [{ file: 'package.json', issue: `Uses ${healthLib}` }] };
@@ -203,7 +354,7 @@ export async function check(context) {
       }
     }
 
-    const workspacePkgs = tree.filter(p => /^(apps|services|packages)\/[^/]+\/package\.json$/i.test(p)).slice(0, 5);
+    const workspacePkgs = tree.filter(p => /^(apps|services|packages|workers)\/[^/]+\/package\.json$/i.test(p)).slice(0, 8);
     for (const p of workspacePkgs) {
       const content = await files.get(p);
       if (!content) continue;
@@ -227,12 +378,12 @@ export async function check(context) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'Library, empty, or tool repository', findings: [] };
     }
 
-    if (isFrameworkSource(tree, packageJson)) {
-      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Framework or library source code', findings: [] };
+    if (isTutorialRepo(context, tree, packageJson)) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Tutorial, course, or examples repository', findings: [] };
     }
 
-    if (isTutorialRepo(tree, packageJson)) {
-      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Tutorial, course, or examples repository', findings: [] };
+    if (isFrameworkSource(tree, packageJson)) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Framework or library source code', findings: [] };
     }
 
     if (isBuildTool(packageJson)) {
@@ -248,7 +399,7 @@ export async function check(context) {
       .map(p => ({ path: p, score: scoreServerFile(p) }))
       .filter(f => f.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, 10)
+      .slice(0, 12)
       .map(f => f.path);
 
     for (const file of serverFiles) {
@@ -261,12 +412,28 @@ export async function check(context) {
       }
     }
 
-    if (isClearlyDeployableServer(tree, packageJson)) {
-      return { checkId, status: 'fail', confidence: 'high', message: 'Deployable server detected but no health check endpoint found', findings: serverFiles.slice(0, 3).map(f => ({ file: f, issue: 'Server file scanned, no health endpoint found' })) };
+    if (isDeployableServer(tree, packageJson)) {
+      return {
+        checkId,
+        status: 'fail',
+        confidence: 'high',
+        message: 'Deployable server detected but no health check endpoint found',
+        findings: serverFiles.slice(0, 3).map(f => ({ file: f, issue: 'Server file scanned, no health endpoint found' }))
+      };
     }
 
-    return { checkId, status: 'check-it', confidence: 'medium', message: 'Unable to determine if a health check is required or present', findings: serverFiles.length > 0 ? serverFiles.slice(0, 3).map(f => ({ file: f, issue: 'Ambiguous server signals' })) : [{ file: 'N/A', issue: 'No server code candidates found to analyze' }] };
+    const hasSomeServerSignals = serverFiles.length > 0 || (packageJson && hasProductionStartScript(packageJson));
+    if (hasSomeServerSignals) {
+      return {
+        checkId,
+        status: 'check-it',
+        confidence: 'medium',
+        message: 'Some server signals found but deployment intent is unclear; verify if a health check is needed',
+        findings: serverFiles.slice(0, 3).map(f => ({ file: f, issue: 'Ambiguous server signals' }))
+      };
+    }
 
+    return { checkId, status: 'not-applicable', confidence: 'medium', message: 'No server or deployable signals detected; health check not required', findings: [] };
   } catch (err) {
     console.error(`[health-check] Error:`, err);
     return { checkId, status: 'not-applicable', confidence: 'low', message: `Analysis error: ${err.message}`, findings: [] };
