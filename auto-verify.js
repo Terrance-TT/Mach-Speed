@@ -28,6 +28,8 @@
 //      the measured failures attached; the next version is re-tested (up to --rounds).
 //   5. VERIFY-THEN-MERGE — winners are squash-merged to main IN THE SAME JOB (a PR is
 //      opened for the audit trail, commented with the scoreboard, then merged).
+//      Only winners whose merge ACTUALLY succeeded are reported as "merged" — a
+//      failed merge demotes the winner to the loser list with the error attached.
 //      Merges by GITHUB_TOKEN do not re-trigger workflows, which is exactly why
 //      verification happens HERE, pre-merge, instead of in a follow-up workflow.
 //   6. UNDO — before the first merge, tag `pre-autofix-<timestamp>` is placed on main;
@@ -382,6 +384,28 @@ async function mergeWinner(gh, checkId, code, scoreComment) {
   return { pr: pr.url, number: pr.number, mergeSha: merge.sha || null };
 }
 
+// ── Merge all winners, honestly ──
+// Iterates a COPY of `winners`: removing entries from an array while for..of-ing
+// it shifts the remaining entries left and the loop skips the next one — that bug
+// once left never-attempted winners in the list, so the scoreboard reported them
+// as "merged". After this runs, `winners` contains ONLY real, successful merges;
+// every failed winner lands in `losers` with the error attached.
+export async function mergeAllWinners(winners, losers, mergeOne, errLog = console.error) {
+  const actuallyMerged = [];
+  for (const w of [...winners]) {
+    try {
+      await mergeOne(w);
+      actuallyMerged.push(w);
+    } catch (err) {
+      errLog(`    [${w.checkId}] MERGE FAILED: ${err.message} — leaving as loser`);
+      losers.push({ ...w, reasons: [`merge failed: ${err.message}`] });
+    }
+  }
+  winners.length = 0;
+  winners.push(...actuallyMerged);
+  return actuallyMerged;
+}
+
 // ── Scoreboard ──
 function buildScoreboard({ winners, losers, rejected, merged, tagName, preMergeSha, usage, model, rounds }) {
   const md = [
@@ -672,18 +696,12 @@ export async function autoverify(argv = process.argv.slice(2)) {
     preMergeSha = await gh.defaultBranchSha();
     tagName = `pre-autofix-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 12)}`;
     await gh.createTag(tagName, preMergeSha).catch(err => console.warn(`    tag creation failed (non-fatal): ${err.message}`));
-    for (const w of winners) {
-      try {
-        const comment = scoreCommentFor(w);
-        const res = await mergeWinner(gh, w.checkId, w.code, comment);
-        w.pr = res.pr; w.number = res.number; w.mergeSha = res.mergeSha;
-        console.log(`    ✅ ${w.checkId}: merged via PR #${res.number} (${res.pr})`);
-      } catch (err) {
-        console.error(`    [${w.checkId}] MERGE FAILED: ${err.message} — leaving as loser`);
-        losers.push({ ...w, reasons: [`merge failed: ${err.message}`] });
-        winners.splice(winners.indexOf(w), 1);
-      }
-    }
+    await mergeAllWinners(winners, losers, async (w) => {
+      const comment = scoreCommentFor(w);
+      const res = await mergeWinner(gh, w.checkId, w.code, comment);
+      w.pr = res.pr; w.number = res.number; w.mergeSha = res.mergeSha;
+      console.log(`    ✅ ${w.checkId}: merged via PR #${res.number} (${res.pr})`);
+    });
   } else if (winners.length) {
     console.log(`\n  ${winners.length} winner(s) verified but NOT merged (${opt.dryRun ? 'dry-run' : 'no --pr'}).`);
   }
