@@ -1,0 +1,35 @@
+name: Try It
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Repo to analyze (owner/name), e.g. expressjs/express'
+        required: true
+        type: string
+      mode:
+        description: 'analyze = just grade it · compare = before/after the last improvement'
+        type: choice
+        options: [analyze, compare]
+        default: analyze
+      tag:
+        description: 'Snapshot tag for compare (leave blank = newest pre-autofix tag)'
+        required: false
+        type: string
+permissions:
+  contents: read
+jobs:
+  try-it:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # needed for tags in compare mode
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run Try It
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MACH_SPEED_REPO_CACHE: repo-cache
+        run: node try-it.js --repo "${{ inputs.repo }}" --mode "${{ inputs.mode }}" --tag "${{ inputs.tag }}"
