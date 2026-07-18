@@ -43,9 +43,10 @@
 
 import fs from 'fs';
 import path from 'path';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import { pathToFileURL } from 'url';
 import { installFetchMiddleware, detectPatterns, TEST_REPOS } from './auto-heal.js';
+import { prefetchRepos, pool, REPO_CACHE_ENV } from './repo-cache.js';
 import {
   Moonshot, ThreadStore, GitHubApi, SYSTEM_PROMPT, STATE_BRANCH,
   extractModule, validateModuleSource, validateModuleRuntime,
@@ -56,6 +57,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ── Tuning knobs ──
 const REPO_TIMEOUT_MS = 240_000;         // per-repo analysis cap (matches auto-heal)
 const CHILD_TIMEOUT_MS = REPO_TIMEOUT_MS + 30_000;
+const SWEEP_CONCURRENCY = 6;             // repo analyses in parallel (snapshots make this cheap)
+const FEEDBACK_CONCURRENCY = 3;          // parallel Moonshot feedback calls (429-handler paces them)
 const CALL_SPACING_MS = 1_500;
 const MAX_CANDIDATES = 8;                // bound nightly cost
 const MAX_ROUNDS = 3;                    // hard cap on test rounds regardless of --rounds
@@ -155,40 +158,50 @@ function cleanupRunner(repoRoot) {
   try { fs.unlinkSync(path.join(repoRoot, RUNNER_FILE)); } catch { /* best effort */ }
 }
 
-function runRepoAnalysis(repoRoot, runnerPath, owner, repo) {
+// Promisified execFile that never throws — the outcome rides back in `error`,
+// exactly like the old execFileSync try/catch contract (killed/SIGTERM = timeout).
+const execFileP = (cmd, args, opts) => new Promise((resolve) => {
+  execFile(cmd, args, opts, (error, stdout, stderr) => resolve({ error, stdout: (stdout || '').toString(), stderr: (stderr || '').toString() }));
+});
+
+function parseRunnerOutput(out) {
+  const start = out.indexOf('{');
+  if (start === -1) return { ok: false, error: `no JSON from runner (output: ${out.slice(0, 120)})` };
   try {
-    const out = execFileSync(process.execPath, [runnerPath, owner, repo], {
-      cwd: repoRoot,
-      timeout: CHILD_TIMEOUT_MS,
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env, // GITHUB_TOKEN flows through to the fetch middleware
-    }).toString();
-    const start = out.indexOf('{');
-    if (start === -1) return { ok: false, error: `no JSON from runner (output: ${out.slice(0, 120)})` };
     return JSON.parse(out.slice(start));
   } catch (err) {
-    const msg = err.killed || (err.signal === 'SIGTERM')
-      ? `timed out after ${Math.round(CHILD_TIMEOUT_MS / 1000)}s`
-      : String(err.message || err).slice(0, 200);
-    return { ok: false, error: msg };
+    return { ok: false, error: `bad JSON from runner: ${err.message}` };
   }
 }
 
-// Run a set of repos, return rows in the same shape auto-heal produces.
+async function runRepoAnalysis(repoRoot, runnerPath, owner, repo) {
+  const { error, stdout } = await execFileP(process.execPath, [runnerPath, owner, repo], {
+    cwd: repoRoot,
+    timeout: CHILD_TIMEOUT_MS,
+    maxBuffer: 64 * 1024 * 1024,
+    env: process.env, // GITHUB_TOKEN (+ repo snapshot cache) flows through to the fetch middleware
+  });
+  if (!error) return parseRunnerOutput(stdout);
+  const msg = error.killed || (error.signal === 'SIGTERM')
+    ? `timed out after ${Math.round(CHILD_TIMEOUT_MS / 1000)}s`
+    : String(error.message || error).slice(0, 200);
+  return { ok: false, error: msg };
+}
+
+// Run a set of repos (in parallel), return rows in the same shape auto-heal produces.
 async function runSweep(repoRoot, runnerPath, repos, label) {
   const rows = [];
   const repoTypeMap = {};
   const errors = [];
-  for (const r of repos) {
-    process.stdout.write(`      [${label}] ${r.owner}/${r.repo} ... `);
-    const res = runRepoAnalysis(repoRoot, runnerPath, r.owner, r.repo);
+  await pool(repos, SWEEP_CONCURRENCY, async (r) => {
+    const slug = `${r.owner}/${r.repo}`;
+    const res = await runRepoAnalysis(repoRoot, runnerPath, r.owner, r.repo);
     if (!res.ok) {
-      errors.push({ repo: `${r.owner}/${r.repo}`, error: res.error });
-      console.log(`ERROR: ${res.error}`);
-      continue;
+      errors.push({ repo: slug, error: res.error });
+      console.log(`      [${label}] ${slug} ... ERROR: ${res.error}`);
+      return;
     }
-    repoTypeMap[`${r.owner}/${r.repo}`] = res.repoType;
+    repoTypeMap[slug] = res.repoType;
     for (const c of res.checks || []) {
       rows.push({
         owner: r.owner,
@@ -203,8 +216,8 @@ async function runSweep(repoRoot, runnerPath, repos, label) {
         weight: c.weight || 0,
       });
     }
-    console.log(`OK (${res.repoType})`);
-  }
+    console.log(`      [${label}] ${slug} ... OK (${res.repoType})`);
+  });
   return { rows, repoTypeMap, errors };
 }
 
@@ -539,6 +552,20 @@ export async function autoverify(argv = process.argv.slice(2)) {
   }
   if (opt.pr && !gh) throw new Error('--pr needs GITHUB_TOKEN and GITHUB_REPOSITORY (or --repo owner/name)');
   const threads = new ThreadStore(gh, path.join(repoRoot, 'threads'));
+  // Thread saves commit to the shared state branch — serialize them (the Moonshot
+  // chats themselves run in parallel) so concurrent branch commits can't race.
+  let saveChain = Promise.resolve();
+  const saveLock = (fn) => { const p = saveChain.then(fn); saveChain = p.catch(() => {}); return p; };
+
+  // ── 4.5 Snapshot every repo once (train + hidden, parallel tarballs) so the
+  // sweeps below read from disk instead of re-downloading each repo every round.
+  if (process.env[REPO_CACHE_ENV]) {
+    const all = [...TEST_REPOS, ...holdoutRepos];
+    const pre = await prefetchRepos(all, path.resolve(process.env[REPO_CACHE_ENV]), { token: process.env.GITHUB_TOKEN });
+    const ready = pre.ok.length + pre.cached.length;
+    console.log(`  Repo snapshots: ${ready}/${all.length} ready` +
+      (pre.failed.length ? ` — ${pre.failed.length} fetch live (${pre.failed.map(f => f.slug).join(', ')})` : ''));
+  }
 
   // ── 5. Baselines ──
   const runnerPath = ensureRunner(repoRoot);
@@ -617,7 +644,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
       console.log(`\n  Phase 3.${round}: sending ${needsRetry.length} rejection(s) back to Moonshot for another attempt`);
       active = [];
       let rateLimitedOut = false;
-      for (const loser of needsRetry) {
+      await pool(needsRetry, FEEDBACK_CONCURRENCY, async (loser) => {
         const { checkId } = loser;
         const s = state.get(checkId);
         try {
@@ -629,7 +656,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
           await sleep(CALL_SPACING_MS);
           const reply = await moonshot.chat(messages);
           messages.push({ role: 'assistant', content: reply });
-          await threads.save(checkId, messages.slice(1));
+          await saveLock(() => threads.save(checkId, messages.slice(1)));
 
           const code2 = extractModule(reply);
           const srcProblems = code2 ? validateModuleSource(checkId, code2) : ['no javascript code block in reply'];
@@ -657,7 +684,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
           feedbackOnly.push(checkId);
           if (/429|rate limit/i.test(err.message)) rateLimitedOut = true;
         }
-      }
+      });
       if (rateLimitedOut) {
         console.error('    Moonshot rate limit persists — ending retries; untested candidates are reported, never merged.');
         for (const id of [...new Set([...feedbackOnly, ...active])]) {
