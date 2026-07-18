@@ -332,71 +332,94 @@ function render(data) {
   document.getElementById('sumNa').textContent = s.notApplicable ?? 0;
 
   // Checks — failures first
-  const checks = (data.checks || []).slice().sort(
-    (a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+  const checks = (Array.isArray(data.checks) ? data.checks : []).slice().sort(
+    (a, b) => (STATUS_ORDER[(a && a.status)] ?? 9) - (STATUS_ORDER[(b && b.status)] ?? 9)
   );
 
   const container = document.getElementById('checks');
   container.innerHTML = '';
 
-  for (const c of checks) {
-    const card = document.createElement('div');
-    card.className = 'check';
+  for (const raw of checks) {
+    try {
+      container.appendChild(buildCheckCard(raw || {}));
+    } catch (err) {
+      // A malformed check must never block the rest of the report
+      const fallback = document.createElement('div');
+      fallback.className = 'check';
+      fallback.innerHTML = '<div class="check-head"><span class="status-dot" style="background:var(--na)"></span><div class="check-body"><div class="check-name"></div><div class="check-msg">Could not display this check</div></div></div>';
+      fallback.querySelector('.check-name').textContent = String((raw && (raw.name || raw.id)) || 'unknown');
+      container.appendChild(fallback);
+    }
+  }
 
-    const findings = Array.isArray(c.findings) ? c.findings : [];
-    const head = document.createElement('div');
-    head.className = 'check-head';
-    head.innerHTML = `
-      <span class="status-dot" style="background:${STATUS_COLOR[c.status] || 'var(--na)'}"></span>
+  resultsEl.classList.add('visible');
+  resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function str(v) {
+  if (v === null || v === undefined) return '';
+  return typeof v === 'object' ? JSON.stringify(v) : String(v);
+}
+
+function buildCheckCard(c) {
+  const card = document.createElement('div');
+  card.className = 'check';
+
+  const status = str(c.status) || 'check-it';
+  const findings = Array.isArray(c.findings) ? c.findings.filter(Boolean) : [];
+  const head = document.createElement('div');
+  head.className = 'check-head';
+  head.innerHTML = `
+      <span class="status-dot" style="background:${STATUS_COLOR[status] || 'var(--na)'}"></span>
       <div class="check-body">
         <div class="check-name"></div>
         <div class="check-msg"></div>
       </div>
       <div class="badges">
-        <span class="badge b-${c.status}">${STATUS_LABEL[c.status] || c.status}</span>
-        <span class="badge b-conf">${c.confidence} conf.</span>
+        <span class="badge b-${status}">${STATUS_LABEL[status] || status}</span>
+        <span class="badge b-conf"></span>
       </div>`;
-    head.querySelector('.check-name').textContent = c.name || c.id;
-    head.querySelector('.check-msg').textContent = c.message || '';
-    card.appendChild(head);
+  head.querySelector('.check-name').textContent = str(c.name || c.id);
+  head.querySelector('.check-msg').textContent = str(c.message);
+  head.querySelector('.b-conf').textContent = str(c.confidence) + ' conf.';
+  card.appendChild(head);
 
-    if (findings.length > 0) {
-      const det = document.createElement('details');
-      const sum = document.createElement('summary');
-      sum.textContent = `${findings.length} finding${findings.length === 1 ? '' : 's'}`;
-      det.appendChild(sum);
+  if (findings.length > 0) {
+    const det = document.createElement('details');
+    const sum = document.createElement('summary');
+    sum.textContent = `${findings.length} finding${findings.length === 1 ? '' : 's'}`;
+    det.appendChild(sum);
 
-      const list = document.createElement('div');
-      list.className = 'findings';
-      for (const f of findings) {
-        const row = document.createElement('div');
-        row.className = 'finding';
+    const list = document.createElement('div');
+    list.className = 'findings';
+    for (const f of findings) {
+      const row = document.createElement('div');
+      row.className = 'finding';
 
-        const loc = document.createElement('span');
-        loc.className = 'loc';
-        loc.textContent = f.file ? (f.file + (f.line ? ':' + f.line : '')) : '';
+      const isObj = f && typeof f === 'object';
+      const loc = document.createElement('span');
+      loc.className = 'loc';
+      const file = isObj ? str(f.file) : '';
+      const line = isObj && f.line ? ':' + str(f.line) : '';
+      loc.textContent = file + line;
 
-        const issue = document.createElement('span');
-        issue.className = 'issue';
-        issue.textContent = f.issue || f.message || JSON.stringify(f);
+      const issue = document.createElement('span');
+      issue.className = 'issue';
+      issue.textContent = isObj ? (str(f.issue) || str(f.message) || JSON.stringify(f)) : str(f);
 
-        const sev = document.createElement('span');
-        const sevName = (f.severity || 'info').toLowerCase();
-        sev.className = 'sev sev-' + sevName;
-        sev.textContent = f.severity || '';
+      const sev = document.createElement('span');
+      const sevText = isObj ? str(f.severity) : '';
+      sev.className = 'sev sev-' + (sevText || 'info').toLowerCase();
+      sev.textContent = sevText;
 
-        row.append(loc, issue, sev);
-        list.appendChild(row);
-      }
-      det.appendChild(list);
-      card.appendChild(det);
+      row.append(loc, issue, sev);
+      list.appendChild(row);
     }
-
-    container.appendChild(card);
+    det.appendChild(list);
+    card.appendChild(det);
   }
 
-  resultsEl.classList.add('visible');
-  resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return card;
 }
 </script>
 </body>
