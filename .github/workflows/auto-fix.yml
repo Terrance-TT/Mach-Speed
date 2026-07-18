@@ -16,6 +16,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write          # needed for the Continuous-mode re-dispatch
 env:
   MACH_SPEED_REPO_CACHE: repo-cache   # snapshot dir shared by all steps in this job
 jobs:
@@ -70,11 +71,16 @@ jobs:
           NEXT=$(( CHAIN + 1 ))
           if [ "$WORK" -gt 0 ] && [ "$NEXT" -lt 4 ]; then
             echo "Work remains ($WORK item(s)) — re-running immediately (chain $NEXT/3)"
-            curl -sf -X POST \
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/auto-fix.yml/dispatches" \
-              -d "{\"ref\":\"main\",\"inputs\":{\"chain\":\"$NEXT\"}}"
+              -d "{\"ref\":\"main\",\"inputs\":{\"chain\":\"$NEXT\"}}")
+            if [ "$CODE" = "204" ]; then
+              echo "Re-dispatched OK."
+            else
+              echo "::warning::Re-dispatch returned HTTP $CODE — no problem: the every-4-hours schedule will pick it up."
+            fi
           else
             echo "Queue clear or chain cap reached — resting until the next scheduled run."
           fi
