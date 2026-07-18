@@ -5,13 +5,44 @@ export const appliesTo = ['deployable', 'server', 'framework'];
 const isFile = (p) => !p.endsWith('/');
 const JS_RE = /\.(?:js|ts|jsx|tsx|mjs|cjs)$/;
 
+const FRAMEWORK_CORE_NAMES = new Set([
+  'express', 'fastify', 'koa', 'hono', 'polka', 'restify',
+  'connect', 'micro', 'sirv', 'hapi', 'feathers', 'sails',
+  'loopback', 'nestjs', 'nest', 'h3', 'nitro'
+]);
+
 function classifyPath(p) {
-  if (/^(?:examples?|demos?|test|tests|spec|__tests__|fixtures?|playground|benchmark|docs|\.github|coverage|storybook|stories|\.storybook|e2e|cypress|playwright|mock|mocks|vendor)\//.test(p)) return 'nonprod';
-  if (/\.(?:test|spec|d)\.(?:js|ts|jsx|tsx|mjs|cjs)$/.test(p)) return 'nonprod';
+  if (/^(?:examples?|demos?|test|tests|spec|__tests__|fixtures?|playground|benchmarks?|docs?|\.github|coverage|storybook|stories|\.storybook|e2e|cypress|playwright|mock|mocks|vendor|tools?|scripts?|tasks?|automation|ci|\.ci|sites?|websites?)\//.test(p)) return 'nonprod';
+  if (/\.(?:test|spec|d|bench|benchmark)\.(?:js|ts|jsx|tsx|mjs|cjs)$/.test(p)) return 'nonprod';
   if (/(?:^|\/)node_modules\//.test(p)) return 'nonprod';
   if (/(?:^|\/)dist\//.test(p)) return 'nonprod';
   if (/(?:^|\/)build\//.test(p)) return 'nonprod';
   return 'prod';
+}
+
+function isFrameworkCore(packageJson, tree, repoType) {
+  if (repoType !== 'framework') return false;
+  if (!packageJson) return false;
+
+  if (tree.some(p => p.startsWith('packages/'))) return true;
+
+  const baseName = (packageJson.name || '').replace(/^@[^/]+\//, '').toLowerCase();
+  if (FRAMEWORK_CORE_NAMES.has(baseName)) return true;
+
+  const hasLibSrc = tree.some(p => /^(?:lib|src)\//.test(p));
+  const hasExamplesOrDocs = tree.some(p => /^(?:examples?|demos?|docs?|benchmarks?)\//.test(p));
+  const hasDeployArtifact = tree.some(p => isFile(p) && /^(?:Dockerfile|fly\.toml|vercel\.json|netlify\.toml|render\.yaml|app\.yaml|wrangler\.toml)$/.test(p));
+  const hasAppsDir = tree.some(p => /^apps\/[^/]+$/.test(p));
+  const hasPagesOrAppRoutes = tree.some(p => /^(?:src\/)?(?:pages\/|app\/)(?!api\/).*/.test(p));
+
+  if (hasLibSrc && hasExamplesOrDocs && !hasDeployArtifact && !hasAppsDir && !hasPagesOrAppRoutes) return true;
+
+  const keywords = (packageJson.keywords || []).map(k => k.toLowerCase());
+  if (keywords.includes('framework') && (keywords.includes('server') || keywords.includes('http') || keywords.includes('middleware'))) {
+    if (!hasDeployArtifact && !hasAppsDir) return true;
+  }
+
+  return false;
 }
 
 function hasServerSignals(packageJson, tree) {
@@ -24,18 +55,23 @@ function hasServerSignals(packageJson, tree) {
 
   const hasServerScript = Object.entries(scripts).some(([k, v]) => {
     if (!v) return false;
-    return /^(start|serve|dev|preview)$/.test(k) && /node|ts-node|nodemon|pm2|next|nuxt|astro|solid-start|remix|serve|listen|http-server/.test(v);
+    return /^(?:start|serve|dev|preview)$/.test(k) && /node|ts-node|nodemon|pm2|next|nuxt|astro|solid-start|remix|serve|listen|http-server|vite|webpack|rollup/.test(v);
   });
 
   const hasDeployArtifact = tree.some(p => isFile(p) && /^(?:Dockerfile|Procfile|fly\.toml|vercel\.json|netlify\.toml|render\.yaml|app\.yaml|wrangler\.toml|docker-compose\.yml|docker-compose\.yaml)$/.test(p));
   const hasRootServerFile = tree.some(p => isFile(p) && /^(?:server|app|index|main|start|listen)\.(?:js|ts|jsx|tsx|mjs|cjs)$/.test(p));
   const hasPagesOrApi = tree.some(p => /^(?:src\/)?(?:pages\/api|app\/api|routes|api)\//.test(p));
+  const hasWranglerToml = tree.some(p => isFile(p) && p === 'wrangler.toml');
 
-  return hasServerDep || hasServerScript || hasDeployArtifact || hasRootServerFile || hasPagesOrApi;
+  return hasServerDep || hasServerScript || hasDeployArtifact || hasRootServerFile || hasPagesOrApi || hasWranglerToml;
 }
 
 function isLibraryOrTool(packageJson, tree) {
   if (!packageJson) return false;
+
+  const baseName = (packageJson.name || '').replace(/^@[^/]+\//, '').toLowerCase();
+  if (FRAMEWORK_CORE_NAMES.has(baseName)) return false;
+
   const scripts = packageJson.scripts || {};
   const deps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
 
@@ -89,6 +125,13 @@ function selectFiles(tree, packageJson) {
 
   ['package.json', 'Dockerfile', 'Procfile', 'fly.toml', 'vercel.json', 'netlify.toml', 'render.yaml', 'app.yaml', 'wrangler.toml', 'docker-compose.yml', 'docker-compose.yaml']
     .forEach(f => add(f, 0));
+
+  if (packageJson?.main) {
+    add(packageJson.main.replace(/^\.\/?/, ''), 0);
+  }
+  if (packageJson?.module) {
+    add(packageJson.module.replace(/^\.\/?/, ''), 0);
+  }
 
   ['server', 'app', 'index', 'main', 'start', 'listen', 'www', 'bin', 'cli', 'run', 'application', 'entry', 'bootstrap', 'gateway', 'serve']
     .forEach(n => {
@@ -243,7 +286,7 @@ export async function check(context) {
         const subPkg = JSON.parse(content);
         allFindings.push(...scanScripts(subPkg, subPkgPath).map(f => ({ ...f, location: classifyPath(subPkgPath) })));
       } catch (e) {
-        // ignore parse/read errors for sub-packages
+        console.error(`Error reading/parsing ${subPkgPath}:`, e);
       }
     }
 
@@ -321,17 +364,17 @@ export async function check(context) {
       return { checkId, status: 'check-it', confidence: 'medium', message: 'Both dynamic and hardcoded port patterns found in production files', findings: allFindings };
     }
 
+    if (isFrameworkCore(packageJson, tree, repoType) && prodHardcoded.length === 0) {
+      return { checkId, status: 'pass', confidence: 'medium', message: 'Framework repo — port configuration handled by framework core', findings: allFindings };
+    }
+
     const hasMetaFramework = hasMetaFrameworkDep(packageJson);
     const hasServerDep = hasServerDependency(packageJson);
     const hasDeployArtifact = tree.some(p => isFile(p) && /^(?:Dockerfile|Procfile|fly\.toml|vercel\.json|netlify\.toml|render\.yaml|app\.yaml|wrangler\.toml|docker-compose\.yml|docker-compose\.yaml)$/.test(p));
     const hasStartScript = packageJson?.scripts?.start || packageJson?.scripts?.serve || packageJson?.scripts?.preview || packageJson?.scripts?.dev;
 
-    if (hasMetaFramework && !hasServerDep && prodHardcoded.length === 0) {
+    if (hasMetaFramework && !prodHardcoded.length) {
       return { checkId, status: 'pass', confidence: 'medium', message: 'Framework-managed server supports dynamic port configuration', findings: allFindings };
-    }
-
-    if (repoType === 'framework' && !prodHardcoded.length && tree.some(p => p.startsWith('packages/'))) {
-      return { checkId, status: 'pass', confidence: 'medium', message: 'Framework repo — port configuration handled by framework core', findings: allFindings };
     }
 
     if (!hasServerSignals(packageJson, tree) && !hasMetaFramework && !hasDeployArtifact && !hasStartScript) {
