@@ -11,7 +11,7 @@ function scoreFile(path) {
   const base = path.split('/').pop().toLowerCase();
   let score = 0;
 
-  const entryNames = ['index', 'main', 'server', 'app', 'config', 'entry', 'start', 'cli', 'build', 'core', 'runtime', 'compiler'];
+  const entryNames = ['index', 'main', 'server', 'app', 'config', 'entry', 'start', 'cli', 'bin', 'build', 'core', 'runtime', 'compiler'];
   if (entryNames.some(n => base.includes(n))) score += 5;
 
   const buildConfigs = [
@@ -29,8 +29,8 @@ function scoreFile(path) {
   return score;
 }
 
-// ── Test/example file detection ────────────────────────────────
-function isTestOrExampleFile(path) {
+// ── Test file detection (examples are kept; they may be the product) ──
+function isTestFile(path) {
   if (/(^|\/)test(s|ing)?\//.test(path)) return true;
   if (/(^|\/)__tests__?\//.test(path)) return true;
   if (/(^|\/)spec(s|ification)?\//.test(path)) return true;
@@ -39,7 +39,6 @@ function isTestOrExampleFile(path) {
   if (/(^|\/)e2e\//.test(path)) return true;
   if (/(^|\/)integration\//.test(path)) return true;
   if (/(^|\/)benchmark(s)?\//.test(path)) return true;
-  if (/(^|\/)examples?\//.test(path) && !/\.env(\.|$)/.test(path)) return true;
   const base = path.split('/').pop();
   if (/^(jest|vitest|karma|playwright|cypress)\.config\./.test(base)) return true;
   if (/\.(test|spec|e2e)\.(js|ts|jsx|tsx|mjs|cjs)$/.test(path)) return true;
@@ -83,7 +82,7 @@ function findEnvUsage(content) {
   return null;
 }
 
-// ── Scan files for env usage ───────────────────────────────────
+// ── Scan JS/TS files for env usage ─────────────────────────────
 async function scanFiles(fileList, files) {
   let foundPattern = null;
   let foundDotenvSetup = false;
@@ -97,9 +96,7 @@ async function scanFiles(fileList, files) {
         foundDotenvSetup = true;
       }
       if (foundPattern) break;
-    } catch (e) {
-      // continue scanning other files
-    }
+    } catch (e) { /* swallow per-file read errors */ }
   }
   return { foundPattern, foundDotenvSetup };
 }
@@ -111,7 +108,7 @@ function buildFileList(tree, scanLimit) {
       !p.includes('node_modules') &&
       /\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p) &&
       !/\.d\.ts$/.test(p) &&
-      !isTestOrExampleFile(p)
+      !isTestFile(p)
     )
     .sort((a, b) => scoreFile(b) - scoreFile(a))
     .slice(0, scanLimit);
@@ -129,109 +126,77 @@ export async function check(context) {
     const devDeps = packageJson?.devDependencies || {};
     const scripts = packageJson?.scripts || {};
     const scriptsStr = JSON.stringify(scripts);
-    const hasWorkspaces = !!packageJson?.workspaces;
 
-    const isNodeModules = p => p.includes('node_modules');
-
-    // ── Tree-based signals (fast, no reads) ─────────────────────
-    const hasAnyEnvFile = tree.some(p => /\.env(\..+)?$/.test(p) && !isNodeModules(p));
+    // ── Tree-level signals (fast, zero reads) ───────────────────
+    const hasEnvFile = tree.some(p => /(^|\/)\.env(\.|$)/.test(p) && !p.includes('node_modules'));
     const hasDotenvDep = !!(deps.dotenv || deps['@dotenvx/dotenvx'] || deps['dotenv-expand'] || devDeps.dotenv);
-    const hasDockerfile = tree.some(p => (p === 'Dockerfile' || p === 'docker-compose.yml' || p === 'docker-compose.yaml') && !isNodeModules(p));
-    const hasTurboJson = tree.some(p => p.endsWith('turbo.json') && !isNodeModules(p));
-    const hasWrangler = tree.some(p => /wrangler\.(toml|json)$/.test(p) && !isNodeModules(p));
-    const hasVercelJson = tree.some(p => p === 'vercel.json' && !isNodeModules(p));
-    const hasNetlifyToml = tree.some(p => p === 'netlify.toml' && !isNodeModules(p));
-    const hasFlyToml = tree.some(p => /fly\.toml$/.test(p) && !isNodeModules(p));
-    const hasServerlessConfig = tree.some(p => /serverless\.(yml|yaml|json)$/.test(p) && !isNodeModules(p));
-    const hasPnpmWorkspace = tree.some(p => p === 'pnpm-workspace.yaml' && !isNodeModules(p));
-    const hasNxJson = tree.some(p => p === 'nx.json' && !isNodeModules(p));
-    const hasLernaJson = tree.some(p => p === 'lerna.json' && !isNodeModules(p));
+    const hasEnvInScripts = /\b(?:NODE_ENV|cross-env|dotenvx|dotenv|env-cmd)\b/.test(scriptsStr);
+    const hasBuildTool = ['webpack', 'rollup', 'vite', 'esbuild', 'parcel', 'rspack', 'next', 'nuxt', 'remix', 'astro', 'gatsby', 'sveltekit', 'babel', 'typescript', 'tsup', 'unbuild', 'turbo'].some(t => !!deps[t] || !!devDeps[t]);
+    const hasTurboJson = tree.some(p => p.endsWith('turbo.json') && !p.includes('node_modules'));
+    const hasWrangler = tree.some(p => /wrangler\.(toml|json)$/.test(p) && !p.includes('node_modules'));
+    const hasDockerfile = tree.some(p => /(^|\/)Dockerfile$/.test(p) || /(^|\/)docker-compose\.ya?ml$/.test(p));
+    const hasVercelJson = tree.some(p => p === 'vercel.json' && !p.includes('node_modules'));
+    const hasNetlifyToml = tree.some(p => p === 'netlify.toml' && !p.includes('node_modules'));
+    const hasFlyToml = tree.some(p => /fly\.toml$/.test(p) && !p.includes('node_modules'));
+    const hasServerlessConfig = tree.some(p => /serverless\.(yml|yaml|json)$/.test(p) && !p.includes('node_modules'));
+    const hasFrameworkConfig = tree.some(p => !p.includes('node_modules') && /(next|nuxt|astro|remix|svelte|gatsby|eleventy|nitro)\.config\./.test(p));
+    const hasOrmConfig = tree.some(p => !p.includes('node_modules') && /(drizzle|prisma|knexfile|sequelize)\.config\./.test(p));
+    const hasPnpmWorkspace = tree.some(p => p === 'pnpm-workspace.yaml' && !p.includes('node_modules'));
+    const hasWorkspaces = !!packageJson?.workspaces || hasPnpmWorkspace;
+    const subPackages = tree.filter(p => p.endsWith('package.json') && p !== 'package.json' && !p.includes('node_modules'));
+    const hasSubPackages = subPackages.length > 0;
+    const hasStartScript = ['start', 'dev', 'serve'].some(k => !!scripts[k]);
+    const hasDeployScript = ['deploy', 'preview'].some(k => !!scripts[k]) || !!scripts['deploy'];
 
-    const hasFrameworkConfig = tree.some(p =>
-      !isNodeModules(p) &&
-      /(next|nuxt|astro|remix|svelte|gatsby|eleventy|nitro)\.config\./.test(p)
-    );
-    const hasOrmConfig = tree.some(p =>
-      !isNodeModules(p) &&
-      /(drizzle|prisma|knexfile|sequelize)\.config\./.test(p)
-    );
-    const hasBuildConfig = tree.some(p =>
-      !isNodeModules(p) &&
-      /(webpack|rspack|rollup|vite|esbuild|tsup|parcel|farm)\.config\./.test(p)
-    );
+    const sourceFileCount = tree.filter(p => /\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p) && !p.includes('node_modules') && !/\.d\.ts$/.test(p)).length;
 
-    const subPackageJsons = tree.filter(p => p.endsWith('package.json') && p !== 'package.json' && !isNodeModules(p));
-    const hasSubPackages = subPackageJsons.length > 0;
+    // ── Layer 1: source-code scan ───────────────────────────────
+    const scanLimit = (hasWorkspaces || hasSubPackages) ? 40 : 30;
+    const sourceFiles = buildFileList(tree, scanLimit);
+    const { foundPattern, foundDotenvSetup } = await scanFiles(sourceFiles, files);
 
-    const hasEnvInScripts = /\b(?:NODE_ENV|cross-env|dotenvx|dotenv|env-cmd)\b|\benv\./.test(scriptsStr);
-    const scriptKeys = Object.keys(scripts);
-    const hasStartScript = scriptKeys.some(k => ['start', 'dev', 'serve'].includes(k));
-    const hasDeployScript = scriptKeys.some(k => k.startsWith('deploy')) || !!scripts.preview;
-
-    const buildToolDeps = ['webpack', 'rollup', 'vite', 'esbuild', 'parcel', 'rspack', 'next', 'nuxt', 'remix', 'astro', 'gatsby', 'sveltekit', 'babel', 'typescript', 'tsup', 'unbuild', 'turbo', 'vitest'];
-    const hasBuildTool = buildToolDeps.some(t => !!deps[t] || !!devDeps[t]);
-
-    const sourceFileCount = tree.filter(p => /\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p) && !isNodeModules(p) && !/\.d\.ts$/.test(p)).length;
-
-    // ── Build bounded scan list (config files + JS sources) ─────
-    const configFilesToScan = tree
-      .filter(p => {
-        if (isNodeModules(p)) return false;
-        if (p.endsWith('turbo.json')) return true;
-        if (/wrangler\.(toml|json)$/.test(p)) return true;
-        if (p === 'package.json') return true;
-        if (p.endsWith('package.json') && /\/(apps|packages|examples|www|docs|site|web|services|api)\//.test(p)) return true;
-        return false;
-      })
-      .sort((a, b) => a.split('/').length - b.split('/').length)
-      .slice(0, 10);
-
-    const jsFiles = buildFileList(tree, 20);
-    const filesToScan = [...new Set([...configFilesToScan, ...jsFiles])].slice(0, 30);
-
-    const { foundPattern, foundDotenvSetup } = await scanFiles(filesToScan, files);
-
-    // 1. Direct code evidence → high confidence pass
     if (foundPattern) {
       const parts = [];
       if (hasDotenvDep || foundDotenvSetup) parts.push('dotenv configured');
-      if (hasAnyEnvFile) parts.push('.env file present');
-      const runtimeInfo = parts.join(', ') || `${foundPattern} usage found`;
-      return { checkId, status: 'pass', confidence: 'high', message: `Uses environment variables (${runtimeInfo})`, findings: [] };
+      if (hasEnvFile) parts.push('.env file present');
+      const info = parts.join(', ') || `${foundPattern} usage found`;
+      return { checkId, status: 'pass', confidence: 'high', message: `Uses environment variables (${info})`, findings: [] };
     }
 
-    // 2. Read turbo.json for explicit env declarations
+    // ── Layer 2: read turbo.json for explicit env declarations ──
     if (hasTurboJson) {
-      const turboPath = tree.find(p => p.endsWith('turbo.json') && !isNodeModules(p));
+      const turboPath = tree.find(p => p.endsWith('turbo.json') && !p.includes('node_modules'));
       if (turboPath) {
         try {
-          const turboContent = await files.get(turboPath);
-          if (turboContent && /"globalEnv"|"env"\s*:/.test(turboContent)) {
+          const content = await files.get(turboPath);
+          if (content && /"globalEnv"|"env"\s*:/.test(content)) {
             return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (turborepo env config)', findings: [] };
           }
         } catch (e) { /* ignore */ }
       }
     }
 
-    // 3. Read sub-package.jsons for env references in scripts
+    // ── Layer 3: inspect workspace package.json files for env signals ──
     if (hasSubPackages) {
-      const pkgsToRead = subPackageJsons.slice(0, 5);
-      for (const pkgPath of pkgsToRead) {
+      for (const pkgPath of subPackages.slice(0, 5)) {
         try {
-          const pkgContent = await files.get(pkgPath);
-          if (pkgContent && /\b(?:NODE_ENV|cross-env|dotenvx|dotenv|env-cmd)\b|\benv\./.test(pkgContent)) {
-            return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (env referenced in workspace package)', findings: [] };
+          const content = await files.get(pkgPath);
+          if (content && /\b(?:NODE_ENV|cross-env|dotenvx|dotenv|env-cmd|process\.env)\b/.test(content)) {
+            return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (workspace package env usage)', findings: [] };
           }
         } catch (e) { /* ignore */ }
       }
     }
 
-    // 4. Strong single-signal passes
-    if (hasAnyEnvFile) {
+    // ── Layer 4: strong standalone signals ──────────────────────
+    if (hasEnvFile) {
       return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (.env file present)', findings: [] };
     }
     if (hasDotenvDep) {
       return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (dotenv dependency)', findings: [] };
+    }
+    if (hasEnvInScripts) {
+      return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (env referenced in scripts)', findings: [] };
     }
     if (hasWrangler) {
       return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (wrangler config present)', findings: [] };
@@ -245,56 +210,56 @@ export async function check(context) {
     if (hasDeployScript) {
       return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (deploy script present)', findings: [] };
     }
-    if (hasEnvInScripts) {
-      return { checkId, status: 'pass', confidence: 'high', message: 'Uses environment variables (env referenced in scripts)', findings: [] };
-    }
 
-    // 5. Compose weaker signals
+    // ── Layer 5: composed weaker signals ────────────────────────
     const signals = [];
+    if (hasBuildTool) signals.push('build tool');
     if (hasFrameworkConfig) signals.push('framework config');
-    if (hasBuildConfig) signals.push('build config');
-    if (hasTurboJson) signals.push('turborepo config');
+    if (hasTurboJson) signals.push('turborepo');
     if (hasVercelJson || hasNetlifyToml || hasFlyToml || hasServerlessConfig) signals.push('deployment config');
-    if (hasSubPackages) signals.push('monorepo structure');
-    if (hasWorkspaces || hasPnpmWorkspace || hasNxJson || hasLernaJson) signals.push('workspace config');
+    if (hasWorkspaces || hasSubPackages) signals.push('monorepo');
     if (hasStartScript) signals.push('start script');
-    if (hasBuildTool) signals.push('build tool dependency');
 
-    // 6. Multi-signal pass
     if (signals.length >= 2) {
       return { checkId, status: 'pass', confidence: 'medium', message: `Uses environment variables (${signals.join(', ')})`, findings: [] };
     }
 
-    // 7. Type-based decisive inference
-    if (repoType === RepoType.FRAMEWORK) {
-      if (signals.length > 0 || hasBuildTool || hasFrameworkConfig || sourceFileCount > 30) {
-        const reason = signals.length ? signals.join(', ') : (hasFrameworkConfig ? 'framework config' : 'substantial framework codebase');
+    // ── Layer 6: type-based inference ───────────────────────────
+    if (repoType === RepoType.FRAMEWORK || repoType === RepoType.TOOL) {
+      if (signals.length > 0 || hasBuildTool || sourceFileCount > 30) {
+        const reason = signals.length ? signals.join(', ') : 'framework/tool codebase';
         return { checkId, status: 'pass', confidence: 'medium', message: `Uses environment variables (${reason})`, findings: [] };
       }
     }
 
     if (repoType === RepoType.DEPLOYABLE || repoType === RepoType.SERVER) {
-      if (signals.length > 0 || hasStartScript || hasDockerfile || hasSubPackages) {
+      if (signals.length > 0 || hasStartScript || hasDockerfile) {
         const reason = signals.length ? signals.join(', ') : 'deployment signals present';
         return { checkId, status: 'pass', confidence: 'medium', message: `Uses environment variables (${reason})`, findings: [] };
       }
     }
 
-    // 8. Library exception
+    // ── Layer 7: library exception ──────────────────────────────
     if (repoType === RepoType.LIBRARY) {
       return { checkId, status: 'not-applicable', confidence: 'medium', message: 'Library — env var usage not required', findings: [] };
     }
 
-    // 9. Single weak signal → low confidence pass (decisive over check-it)
+    // ── Layer 8: single weak signal (decisive over check-it) ────
     if (signals.length === 1) {
       return { checkId, status: 'pass', confidence: 'low', message: `Uses environment variables (${signals[0]})`, findings: [] };
     }
 
-    // 10. Genuinely ambiguous
-    return { checkId, status: 'check-it', confidence: 'medium', message: 'No environment variable usage detected', findings: [] };
+    // ── Layer 9: genuinely undecidable ──────────────────────────
+    return {
+      checkId,
+      status: 'check-it',
+      confidence: 'medium',
+      message: 'No environment variable usage detected',
+      findings: [{ file: 'N/A', issue: 'No env var signals found in code, configs, or package metadata' }],
+    };
 
   } catch (err) {
     console.error(err);
-    return { checkId, status: 'check-it', confidence: 'low', message: `Error: ${err.message}`, findings: [] };
+    return { checkId, status: 'check-it', confidence: 'low', message: `Error: ${err.message}`, findings: [{ file: 'N/A', issue: err.message }] };
   }
 }
