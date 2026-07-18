@@ -450,6 +450,13 @@ export class GitHubApi {
     const created = await this.req('POST', `${this.base}/git/refs`, { ref: `refs/heads/${branch}`, sha: fromSha });
     return created.object.sha;
   }
+  async resetBranch(branch, sha) {
+    // Force-update an existing branch to a new base (returns false if it doesn't exist).
+    const existing = await this.req('GET', `${this.base}/git/ref/heads/${branch}`);
+    if (!existing) return false;
+    await this.req('PATCH', `${this.base}/git/refs/heads/${branch}`, { sha, force: true });
+    return true;
+  }
   async getFile(filePath, ref) {
     const data = await this.req('GET', `${this.base}/contents/${filePath}?ref=${encodeURIComponent(ref)}`);
     if (!data || !data.content) return null;
