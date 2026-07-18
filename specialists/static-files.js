@@ -1,17 +1,21 @@
 export const checkId = 'static-files';
 export const name = 'Static Files Served';
-export const appliesTo = ['deployable', 'server'];
+export const appliesTo = ['deployable', 'server', 'framework'];
 
 const STATIC_SERVING_DEPS = [
   'serve-static', 'express', 'connect', 'polka', 'fastify', 'koa', 'restify', 'hapi', 'hono',
-  'sirv', 'http-server', 'live-server', 'serve-handler', 'koa-static', 'fastify-static',
-  'hono-static', 'connect-static', 'serve', 'light-server', 'servor', 'httpolyglot', 'local-web-server'
+  'sirv', 'http-server', 'live-server', 'serve-handler', 'koa-static', 'fastify-static', '@fastify/static',
+  'hono-static', 'connect-static', 'serve', 'light-server', 'servor', 'httpolyglot', 'local-web-server',
+  'sirv-cli', 'webpack-dev-server', 'vite', 'parcel', 'http-serve', 'superstatic', 'ngrok'
 ];
 
 const FRAMEWORKS_WITH_BUILTIN_STATIC = [
   'next', 'astro', 'nuxt', 'gatsby', 'vite', 'react-scripts',
   'solid-start', 'qwik-city', 'redwoodjs', 'parcel', 'hexo', 'vuepress',
-  'nextra', 'contentlayer'
+  'nextra', 'contentlayer', 'docusaurus', '@docusaurus/core',
+  'vitepress', 'slidev', 'elm-pages', 'gridsome', 'sapper', 'elderjs',
+  'scully', 'ionic', '@ionic/core', 'stencil', '@stencil/core',
+  '@vue/cli-service'
 ];
 
 const STATIC_SCRIPT_PATTERNS = [
@@ -22,12 +26,22 @@ const STATIC_SCRIPT_PATTERNS = [
   /sirv/,
   /next\s+start/,
   /astro\s+(preview|dev)/,
-  /nuxt\s+(start|preview)/,
+  /nuxt\s+(start|preview|dev)/,
   /gatsby\s+serve/,
   /remix-serve/,
   /svelte-kit\s+preview/,
   /polyserve/,
-  /python\s+-m\s+http\.server/
+  /python\s+-m\s+http\.server/,
+  /nginx/,
+  /caddy\s+file-server/,
+  /serve\s+-/,
+  /serve\s+['"]\.\//,
+  /wrangler\s+(pages\s+dev|publish)/,
+  /firebase\s+serve/,
+  /netlify\s+dev/,
+  /vercel\s+(dev|deploy)/,
+  /surge/,
+  /gh-pages/
 ];
 
 const CODE_PATTERNS = [
@@ -38,6 +52,7 @@ const CODE_PATTERNS = [
   /sirv[^/]*static/i,
   /koa-static/,
   /fastify-static/,
+  /['"]@fastify\/static['"]/,
   /hono-static/,
   /connect-static/,
   /app\.use\s*\(\s*['"]\/(public|static|assets)/,
@@ -58,8 +73,13 @@ const CODE_PATTERNS = [
   /server\.route\s*\(\s*\{.*path\s*:\s*['"]\/(public|static|assets)/,
   /app\.use\s*\(\s*['"]\/(public|static|assets)/,
   /router\.use\s*\(\s*['"]\/(public|static|assets)/,
-  /Bun\.serve/,
-  /Deno\.serve/
+  /Bun\.serve\s*\(\s*\{[^}]*static/,
+  /Deno\.serve\s*\(/,
+  /serveDir/,
+  /serveStatic/,
+  /serveFile/,
+  /import\s+.*from\s+['"][^'"]*\/file_server\.ts['"]/,
+  /const\s+app\s*=\s*new\s+Hono/
 ];
 
 const FRAMEWORK_CONFIG_PATTERNS = [
@@ -75,7 +95,8 @@ const FRAMEWORK_CONFIG_PATTERNS = [
   /(^|\/)docusaurus\.config\./,
   /(^|\/)vue\.config\./,
   /(^|\/)nextra\.config\./,
-  /(^|\/)solid\.config\./
+  /(^|\/)solid\.config\./,
+  /(^|\/)vitepress\.config\./
 ];
 
 const HOSTING_CONFIGS = [
@@ -83,7 +104,7 @@ const HOSTING_CONFIGS = [
   'wrangler.toml', 'wrangler.json', 'cloudflare.json'
 ];
 
-const isNonAppPath = (p) => /\/(test|tests|__tests__|spec|e2e|fixtures?|examples?|demo|node_modules|\.next|dist|build|coverage|\.github|vendor)\//.test(p);
+const isNonAppPath = (p) => /\/(test|tests|__tests__|spec|e2e|fixtures?|examples?|demo|node_modules|\.next|dist|build|coverage|vendor)\//.test(p);
 
 const getDeps = (pkg) => {
   if (!pkg || typeof pkg !== 'object') return {};
@@ -111,79 +132,92 @@ export async function check(context) {
       };
     }
 
-    const rootDeps = getDeps(packageJson);
-    const rootScripts = packageJson?.scripts || {};
-    const allRootScripts = Object.values(rootScripts).join(' ');
+    const checkPkg = (pkg) => {
+      if (!pkg) return null;
+      const deps = getDeps(pkg);
+      const scripts = pkg.scripts || {};
+      const allScripts = Object.values(scripts).join(' ');
+      if (STATIC_SERVING_DEPS.some(d => deps[d])) {
+        return { status: 'pass', reason: 'Static file serving dependency found' };
+      }
+      if (FRAMEWORKS_WITH_BUILTIN_STATIC.some(d => deps[d])) {
+        return { status: 'pass', reason: 'Framework with built-in static serving detected' };
+      }
+      if (STATIC_SCRIPT_PATTERNS.some(rx => rx.test(allScripts))) {
+        return { status: 'pass', reason: 'Static serving script detected' };
+      }
+      return null;
+    };
 
-    if (STATIC_SERVING_DEPS.some(d => rootDeps[d]) || STATIC_SCRIPT_PATTERNS.some(rx => rx.test(allRootScripts))) {
-      return { checkId, status: 'pass', confidence: 'high', message: 'Static file serving configured in root package.json', findings: [] };
+    const rootResult = checkPkg(packageJson);
+    if (rootResult) {
+      return { checkId, status: 'pass', confidence: 'high', message: rootResult.reason, findings: [] };
     }
 
-    if (FRAMEWORKS_WITH_BUILTIN_STATIC.some(d => rootDeps[d])) {
-      return { checkId, status: 'pass', confidence: 'high', message: 'Framework detected that serves static assets automatically', findings: [] };
-    }
+    const subPkgPaths = tree
+      .filter(p => p !== 'package.json' && p.endsWith('package.json') && !p.includes('/node_modules/'))
+      .slice(0, 15);
 
-    const isMonorepo = !!(
-      packageJson?.workspaces ||
-      tree.some(p => ['pnpm-workspace.yaml', 'turbo.json', 'nx.json', 'lerna.json', 'rush.json'].includes(p))
-    );
-
-    if (isMonorepo) {
-      const subPkgPaths = tree.filter(p => {
-        const parts = p.split('/');
-        return parts.length > 1 && parts.length <= 4 && parts[parts.length - 1] === 'package.json' && !p.includes('node_modules');
-      }).slice(0, 12);
-
-      if (subPkgPaths.length > 0) {
-        const subPkgs = await Promise.all(
-          subPkgPaths.map(async (p) => {
+    if (subPkgPaths.length > 0) {
+      const subPkgs = await Promise.all(
+        subPkgPaths.map(async (p) => {
+          try {
+            const content = await files.get(p);
+            if (!content) return null;
             try {
-              const content = await files.get(p);
-              if (!content) return null;
-              try {
-                return JSON.parse(content);
-              } catch (parseErr) {
-                console.error(`static-files: failed to parse ${p}:`, parseErr);
-                return null;
-              }
-            } catch (readErr) {
-              console.error(`static-files: error reading ${p}:`, readErr);
+              return JSON.parse(content);
+            } catch (e) {
+              console.error(`static-files: JSON parse error in ${p}:`, e);
               return null;
             }
-          })
-        );
+          } catch (e) {
+            console.error(`static-files: read error for ${p}:`, e);
+            return null;
+          }
+        })
+      );
 
-        for (const subPkg of subPkgs) {
-          if (!subPkg) continue;
-          const subDeps = getDeps(subPkg);
-          const subScripts = Object.values(subPkg.scripts || {}).join(' ');
-          if (STATIC_SERVING_DEPS.some(d => subDeps[d]) || STATIC_SCRIPT_PATTERNS.some(rx => rx.test(subScripts))) {
-            return { checkId, status: 'pass', confidence: 'high', message: 'Static file serving configured in a workspace package', findings: [] };
-          }
-          if (FRAMEWORKS_WITH_BUILTIN_STATIC.some(d => subDeps[d])) {
-            return { checkId, status: 'pass', confidence: 'high', message: 'Workspace package uses a framework that serves static assets automatically', findings: [] };
-          }
+      for (const subPkg of subPkgs) {
+        if (!subPkg) continue;
+        const subResult = checkPkg(subPkg);
+        if (subResult) {
+          return { checkId, status: 'pass', confidence: 'high', message: `${subResult.reason} in workspace`, findings: [] };
         }
       }
     }
 
-    const hasFrameworkConfig = FRAMEWORK_CONFIG_PATTERNS.some(rx => tree.some(p => rx.test(p) && !p.includes('node_modules')));
+    const hasFrameworkConfig = FRAMEWORK_CONFIG_PATTERNS.some(rx =>
+      tree.some(p => rx.test(p) && !isNonAppPath(p))
+    );
     if (hasFrameworkConfig) {
       return { checkId, status: 'pass', confidence: 'high', message: 'Framework configuration detected; static assets served automatically', findings: [] };
     }
 
-    if (HOSTING_CONFIGS.some(f => tree.includes(f))) {
+    const hasHostingConfig = HOSTING_CONFIGS.some(f => tree.includes(f));
+    if (hasHostingConfig) {
       return { checkId, status: 'pass', confidence: 'high', message: 'Static hosting platform configuration detected', findings: [] };
     }
 
-    const candidates = [];
-    const seen = new Set();
-    const add = (p) => { if (p && !seen.has(p)) { seen.add(p); candidates.push(p); } };
+    const infraFiles = [];
+    const seenInfra = new Set();
+    const addInfra = (p) => { if (p && !seenInfra.has(p)) { seenInfra.add(p); infraFiles.push(p); } };
 
     ['Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'nginx.conf', 'Caddyfile']
-      .forEach(f => { if (tree.includes(f)) add(f); });
+      .forEach(f => { if (tree.includes(f)) addInfra(f); });
 
-    tree.filter(p => /^\.github\/workflows\/.+\.ya?ml$/.test(p)).slice(0, 3).forEach(add);
+    tree.filter(p => /^\.github\/workflows\/.+\.ya?ml$/.test(p)).slice(0, 3).forEach(addInfra);
+
+    for (const filePath of infraFiles) {
+      try {
+        const content = await files.get(filePath);
+        if (!content) continue;
+        if (/nginx|serve\s+-s|http-server|live-server|sirv|python\s+-m\s+http\.server|caddy\s+file-server|vite\s+preview|COPY\s+.*\/public|COPY\s+.*\/static/.test(content)) {
+          return { checkId, status: 'pass', confidence: 'high', message: `Static file serving detected in ${filePath}`, findings: [{ file: filePath, issue: 'Static file serving configuration found' }] };
+        }
+      } catch (e) {
+        console.error(`static-files: read error for ${filePath}:`, e);
+      }
+    }
 
     const sourceFiles = tree.filter(p => {
       const basename = p.split('/').pop() || '';
@@ -191,7 +225,7 @@ export async function check(context) {
         /\.(js|ts|mjs|cjs|go|py|rs|java|php)$/.test(p) &&
         !/(test|spec|example|\.d\.ts|stories|fixture)/i.test(basename) &&
         !/(node_modules|\.next|dist|build|coverage|vendor)\//.test(p) &&
-        /\b(server|app|index|main|middleware|router|handler|route|static|config|www|cli|worker|bin)\b/i.test(basename)
+        /\b(server|app|index|main|middleware|router|handler|route|static|config|www|cli|worker|bin|entry|start)\b/i.test(basename)
       );
     });
 
@@ -201,9 +235,8 @@ export async function check(context) {
       const bScore = priority.test(b) ? 2 : 1;
       return bScore - aScore;
     });
-    sourceFiles.slice(0, 10).forEach(add);
 
-    for (const filePath of candidates.slice(0, 15)) {
+    for (const filePath of sourceFiles.slice(0, 10)) {
       try {
         const content = await files.get(filePath);
         if (!content) continue;
@@ -218,8 +251,8 @@ export async function check(context) {
             };
           }
         }
-      } catch (readErr) {
-        console.error(`static-files: error reading ${filePath}:`, readErr);
+      } catch (e) {
+        console.error(`static-files: read error for ${filePath}:`, e);
       }
     }
 
@@ -243,7 +276,6 @@ export async function check(context) {
         { file: staticLocation, issue: 'Static assets detected but no explicit serving dependency, framework, or hosting config found' }
       ]
     };
-
   } catch (err) {
     console.error('static-files specialist error:', err);
     return {
