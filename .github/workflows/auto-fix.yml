@@ -1,8 +1,14 @@
 name: Auto-Fix + Verify
 on:
   schedule:
-    - cron: '0 */4 * * *'   # every 4 hours
+    - cron: '0 */4 * * *'   # every 4 hours (the heartbeat — always resumes the loop)
   workflow_dispatch:
+    inputs:
+      chain:
+        description: 'Internal: chain depth for continuous mode (leave at 0)'
+        required: false
+        type: string
+        default: '0'
 concurrency:
   group: self-heal
   cancel-in-progress: false
@@ -54,3 +60,21 @@ jobs:
             verify-report.md
             verify-report.json
           retention-days: 30
+      - name: Continuous mode — re-run while there's still work (max 4 in a row)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAIN: ${{ inputs.chain || '0' }}
+        run: |
+          WORK=$(node -e "try{const r=require('./verify-report.json');console.log((r.merged||[]).length+(r.sentBack||[]).length+(r.lintRejected||[]).length)}catch(e){console.log(0)}")
+          NEXT=$(( CHAIN + 1 ))
+          if [ "$WORK" -gt 0 ] && [ "$NEXT" -lt 4 ]; then
+            echo "Work remains ($WORK item(s)) — re-running immediately (chain $NEXT/3)"
+            curl -sf -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/auto-fix.yml/dispatches" \
+              -d "{\"ref\":\"main\",\"inputs\":{\"chain\":\"$NEXT\"}}"
+          else
+            echo "Queue clear or chain cap reached — resting until the next scheduled run."
+          fi
