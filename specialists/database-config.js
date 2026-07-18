@@ -3,13 +3,14 @@
  * Checks if database connection uses environment variables rather than hardcoded credentials.
  */
 
-import { RepoType } from '../contract.js';
-
 export const checkId = 'database-config';
 export const name = 'Database Configuration';
 export const appliesTo = ['deployable', 'server', 'framework'];
 
-const DB_DEPS = ['mongoose', 'sequelize', 'prisma', 'typeorm', 'knex', 'pg', 'mysql2', 'mongodb', 'redis', '@prisma/client'];
+const DB_DEPS = [
+  'mongoose', 'sequelize', 'prisma', 'typeorm', 'knex', 'pg', 'mysql2', 'mongodb', 'redis', '@prisma/client',
+  'drizzle-orm', 'drizzle-kit', '@astrojs/db', 'kysely'
+];
 
 // GOOD patterns — evidence that DB config uses env vars
 const GOOD_PATTERNS = [
@@ -20,9 +21,12 @@ const GOOD_PATTERNS = [
   /process\.env\.(REDIS|REDIS_URL|REDIS_HOST|REDIS_PORT)/i,
   /process\.env\.(PG_|POSTGRES_|POSTGRESQL_)/i,
   /process\.env\.(MYSQL_|MYSQL2_)/i,
-  /process\.env\.[A-Z_]*DATABASE[A-Z_]*/i,        // catches NEXT_PRIVATE_DATABASE_URL, etc.
-  /process\.env\.[A-Z_]*DB_[A-Z_]+/i,              // catches any DB_ prefixed env var
-  // Prisma: env("...") patterns in .prisma files
+  /process\.env\.[A-Z_]*DATABASE[A-Z_]*/i,
+  /process\.env\.[A-Z_]*DB_[A-Z_]+/i,
+  // Vite / Astro / Deno env patterns
+  /import\.meta\.env\.[A-Z_]*(?:DATABASE|DB|POSTGRES|MONGO|REDIS)[A-Z_]*/i,
+  /Deno\.env\.get\s*\(\s*["'][^"']*(?:DATABASE|DB|POSTGRES|MONGO|REDIS)[^"']*["']\s*\)/i,
+  // Prisma / JS env() patterns
   /env\s*\(\s*["'][^"']*DATABASE[^"']*["']\s*\)/i,
   /env\s*\(\s*["'][^"']*DB_[^"']*["']\s*\)/i,
   /env\s*\(\s*["'][^"']*(MONGO|REDIS|POSTGRES|MYSQL)[^"']*["']\s*\)/i,
@@ -32,7 +36,7 @@ const GOOD_PATTERNS = [
   // Docker compose env interpolation
   /\$\{(DATABASE_URL|DB_HOST|DB_NAME|DB_PORT|DATABASE_[A-Z_]+)\}/i,
   /\$\{(MONGO|MONGODB|REDIS|POSTGRES|MYSQL)[A-Z_]*\}/i,
-  // .env / .env.example files: raw env var assignments (no process.env. prefix)
+  // .env / .env.example files: raw env var assignments
   /^(DATABASE_URL|DATABASE_HOST|DATABASE_NAME|DATABASE_PORT|DATABASE_USER)=/im,
   /^(DB_HOST|DB_NAME|DB_PORT|DB_USER|DB_PASS|DB_URL)=/im,
   /^(MONGO|MONGODB)_/im,
@@ -42,127 +46,151 @@ const GOOD_PATTERNS = [
 
 // BAD patterns — hardcoded connection strings with credentials
 const BAD_PATTERNS = [
-  // Connection strings with embedded passwords
-  /(mongodb|mongodb\+srv|postgres|postgresql|mysql):\/\/[^:]+:[^@\s]+@\S+/i,
-  // MySQL connection strings with password
-  /mysql:\/\/\w+:\w+@\w+/i,
+  /(mongodb|mongodb\+srv|postgres|postgresql|mysql|redis):\/\/[^:]+:[^@\s]+@\S+/i,
 ];
 
 // STRONG indicators — used when hasDbDep is false
-// These are directory-based patterns that strongly indicate DB usage
 const STRONG_INDICATOR_PATTERNS = [
-  /(^|[\/])(db|database|model)s?[\/]/i,               // files in db/, database/, model/, models/ dirs
-  /(^|[\/])prisma[\/]/i,                               // files in prisma/ directory
-  /(^|[\/])(config|configs)[\/](db|database|mongo|postgres|mysql|redis)/i,  // config/db/ or config/database/
-  /(^|[\/])([^\/]*\.)?(db|database|mongo|postgres|mysql|redis)([^\/]*)?\.(js|ts|mjs|cjs)$/i,  // filenames with DB term
+  /(^|[\/])(db|database|model)s?[\/]/i,
+  /(^|[\/])prisma[\/]/i,
+  /(^|[\/])drizzle\.config\.(ts|js|mjs|cjs)$/i,
+  /(^|[\/])(config|configs)[\/](db|database|mongo|postgres|mysql|redis)/i,
+  /(^|[\/])([^\/]*\.)?(db|database|mongo|postgres|mysql|redis)([^\/]*)?\.(js|ts|mjs|cjs)$/i,
 ];
 
 // WEAK indicators — used only when hasDbDep is true
-// These match too many non-DB repos to be reliable standalone indicators
 const WEAK_INDICATOR_PATTERNS = [
-  /\.env/i,                                             // .env files (almost every repo has these)
-  /(docker-compose|compose\.)/i,                        // docker compose files
-  /(^|[\/])connection\.(js|ts|mjs|cjs)$/i,             // connection.js (could be WebSocket, HTTP, etc.)
+  /\.env/i,
+  /(docker-compose|compose\.)/i,
+  /(^|[\/])connection\.(js|ts|mjs|cjs)$/i,
 ];
 
-// File extensions we care about
 const SCAN_EXTENSIONS = /\.(js|ts|mjs|cjs|prisma|yml|yaml)$/i;
-const ENV_EXTENSIONS = /\.env/;
-const DOCKER_COMPOSE_PATTERN = /docker-compose/;
+const MAX_READS = 30;
 
-// Known DB driver repos that should be skipped
-const KNOWN_DB_DRIVER_REPOS = [
-  'node-redis', 'redis',
-  'node-postgres', 'postgres',
-  'node-mysql2', 'mysql2', 'mysql',
-  'mongoose',
-  'sequelize',
-  'prisma',
-  'typeorm',
-  'knex',
-  'mongodb', 'node-mongodb-native',
-];
-
-// Detect if this repo IS a DB driver library itself
-function isDbDriverLibrary(packageJson, repo) {
+function isDbDriverLibrary(packageJson) {
   const pkgName = packageJson?.name;
-  if (pkgName) {
-    if (DB_DEPS.includes(pkgName)) return true;
-    if (pkgName.startsWith('@')) {
-      const scopeName = pkgName.split('/')[1];
-      if (scopeName && DB_DEPS.includes(scopeName)) return true;
-    }
+  if (!pkgName) return false;
+  if (DB_DEPS.includes(pkgName)) return true;
+  if (pkgName.startsWith('@')) {
+    const scopeName = pkgName.split('/')[1];
+    if (scopeName && DB_DEPS.includes(scopeName)) return true;
   }
-  if (repo && KNOWN_DB_DRIVER_REPOS.some(name => repo.toLowerCase() === name.toLowerCase())) return true;
   return false;
 }
 
+function shouldSkipForBadPatterns(filePath) {
+  if (/\.env/i.test(filePath)) return true;
+  if (/docker-compose|compose\./i.test(filePath)) return true;
+  if (/(^|[\/])(test|tests|spec|__tests__|fixtures?|examples?|playground|docs|\.github|scripts|website|www)[\/]/i.test(filePath)) return true;
+  return false;
+}
+
+function isAppLevelPath(filePath) {
+  return !/(^|[\/])(packages|examples|test|tests|spec|__tests__|fixtures?|playground|docs|website|www|scripts|\.github)[\/]/i.test(filePath);
+}
+
 export async function check(context) {
-  const { tree, files, packageJson, repoType, repo } = context;
+  const { tree, files, packageJson } = context;
 
   try {
-    // Skip empty repos and libraries
-    if (repoType === RepoType.EMPTY) {
+    if (tree.length === 0) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'Empty repo — no DB config needed', findings: [] };
     }
-    if (repoType === RepoType.LIBRARY) {
-      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Library — no DB config needed', findings: [] };
-    }
 
-    // Skip DB driver libraries themselves
-    if (isDbDriverLibrary(packageJson, repo)) {
-      const reason = packageJson?.name || repo;
+    if (isDbDriverLibrary(packageJson)) {
+      const reason = packageJson?.name || 'unknown';
       return { checkId, status: 'not-applicable', confidence: 'high', message: `DB driver library (${reason}) — not applicable`, findings: [] };
     }
 
     const deps = { ...packageJson?.dependencies, ...packageJson?.devDependencies } || {};
-    const hasDbDep = DB_DEPS.some(d => deps[d]);
+    let hasDbDep = DB_DEPS.some(d => deps[d]);
+
+    // Scan workspace package.json files for monorepo DB deps
+    if (!hasDbDep) {
+      const pkgJsonPaths = tree
+        .filter(p => /(^|[\/])package\.json$/.test(p) && !/(^|[\/])(node_modules|\.git|dist|build|test|tests|examples?|__tests__|fixtures)[\/]/i.test(p))
+        .slice(0, 20);
+      for (const p of pkgJsonPaths) {
+        const content = await files.get(p);
+        if (content) {
+          try {
+            const parsed = JSON.parse(content);
+            const subDeps = { ...parsed?.dependencies, ...parsed?.devDependencies };
+            if (DB_DEPS.some(d => subDeps[d])) {
+              hasDbDep = true;
+              break;
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
+      }
+    }
 
     if (!hasDbDep) {
-      // When no DB dep: only strong indicators should trigger a scan
-      // Weak indicators (.env, docker-compose) are ignored — they match too many repos
       const strongMatches = tree.filter(p => {
         if (!SCAN_EXTENSIONS.test(p)) return false;
-        if (/(test|spec|example|node_modules)/.test(p)) return false;
+        if (/(node_modules|\.git|dist|build)/i.test(p)) return false;
         return STRONG_INDICATOR_PATTERNS.some(pat => pat.test(p));
       });
-
       if (strongMatches.length === 0) {
         return { checkId, status: 'not-applicable', confidence: 'medium', message: 'No database dependency or DB-related files found', findings: [] };
       }
     }
 
     // Build prioritized scan list
-    // 1. All .env files (small, fast, high signal)
-    const envFiles = tree.filter(p => {
-      if (!ENV_EXTENSIONS.test(p)) return false;
-      if (/\.(test|spec|fixture|mock)\.env/i.test(p)) return false;
-      if (/\.db\.env$/i.test(p)) return false;
-      return true;
-    });
+    const candidates = [];
+    const seen = new Set();
 
-    // 2. All prisma schema files (high signal)
-    const prismaFiles = tree.filter(p =>
-      /(^|[\/])prisma[\/]/i.test(p) && SCAN_EXTENSIONS.test(p)
-    );
+    function add(fileList, score) {
+      for (const f of fileList) {
+        if (seen.has(f)) continue;
+        seen.add(f);
+        candidates.push({ file: f, score });
+      }
+    }
 
-    // 3. Docker compose files
-    const dockerFiles = tree.filter(p =>
-      DOCKER_COMPOSE_PATTERN.test(p) && /\.(yml|yaml)$/.test(p)
-    );
+    // High priority: named config files
+    add(tree.filter(p => 
+      /(^|[\/])(config[\/])?(database|db)\.(js|ts|mjs|cjs)$/i.test(p) &&
+      !/(node_modules|\.git|dist|build)/i.test(p)
+    ), 100);
 
-    // 4. Other DB-related files (limited)
-    const scannedSet = new Set([...envFiles, ...prismaFiles, ...dockerFiles]);
-    const otherFiles = tree.filter(p => {
-      if (scannedSet.has(p)) return false;
-      if (/(test|spec|example|node_modules|\.git)/i.test(p)) return false;
-      if (!SCAN_EXTENSIONS.test(p)) return false;
-      return [...STRONG_INDICATOR_PATTERNS, ...WEAK_INDICATOR_PATTERNS]
-        .some(pat => pat.test(p));
-    }).slice(0, 10);
+    add(tree.filter(p => 
+      /drizzle\.config\.(ts|js|mjs|cjs)$/i.test(p) &&
+      !/(node_modules|\.git|dist|build)/i.test(p)
+    ), 100);
 
-    const sourceFiles = [...envFiles, ...prismaFiles, ...dockerFiles, ...otherFiles]
-      .slice(0, 20);
+    add(tree.filter(p => 
+      /(^|[\/])prisma[\/][^\/]+\.prisma$/i.test(p) &&
+      !/(node_modules|\.git|dist|build)/i.test(p)
+    ), 95);
+
+    // Env files: prioritize root-level (fewest path segments)
+    const envList = tree.filter(p => 
+      /\.env/i.test(p) && 
+      !/(node_modules|\.git|dist|build)/i.test(p) &&
+      !/\.(test|spec|fixture|mock)\.env/i.test(p)
+    ).sort((a, b) => a.split('/').length - b.split('/').length);
+    add(envList.slice(0, 5), 90);
+
+    // Docker compose
+    add(tree.filter(p => 
+      /docker-compose|compose\./i.test(p) && 
+      /\.(yml|yaml)$/i.test(p) &&
+      !/(node_modules|\.git|dist|build)/i.test(p)
+    ), 80);
+
+    // Other DB-related source files, sorted by depth (root first)
+    const other = tree.filter(p => {
+      if (!/\.(js|ts|mjs|cjs)$/i.test(p)) return false;
+      if (/(node_modules|\.git|dist|build)/i.test(p)) return false;
+      return [...STRONG_INDICATOR_PATTERNS, ...WEAK_INDICATOR_PATTERNS].some(pat => pat.test(p));
+    }).sort((a, b) => a.split('/').length - b.split('/').length);
+    add(other.slice(0, 15), 70);
+
+    const sourceFiles = candidates.slice(0, MAX_READS).map(c => c.file);
 
     let foundGood = false;
     let foundBad = false;
@@ -179,23 +207,15 @@ export async function check(context) {
           const lines = content.split('\n');
           for (let i = 0; i < lines.length; i++) {
             if (pattern.test(lines[i])) {
-              findings.push({
-                file: filePath,
-                line: i + 1,
-                issue: 'DB config uses environment variables',
-                severity: 'info',
-              });
+              findings.push({ file: filePath, line: i + 1, issue: 'DB config uses environment variables' });
               break;
             }
           }
         }
       }
 
-      // Check for BAD patterns (hardcoded credentials)
-      // Skip .env.* templates and docker-compose (dev defaults, not production secrets)
-      const isEnvTemplate = /\.env\./i.test(filePath);
-      const isDockerCompose = /docker-compose|compose\./i.test(filePath);
-      if (!isEnvTemplate && !isDockerCompose) {
+      // Check for BAD patterns (hardcoded credentials) only in relevant source files
+      if (!shouldSkipForBadPatterns(filePath)) {
         for (const pattern of BAD_PATTERNS) {
           const matches = content.match(new RegExp(pattern.source, 'gmi'));
           if (matches) {
@@ -204,12 +224,7 @@ export async function check(context) {
             for (const matchStr of matches.slice(0, 3)) {
               for (let i = 0; i < lines.length; i++) {
                 if (lines[i].includes(matchStr.substring(0, 40))) {
-                  findings.push({
-                    file: filePath,
-                    line: i + 1,
-                    issue: 'Hardcoded DB connection string with credentials',
-                    severity: 'critical',
-                  });
+                  findings.push({ file: filePath, line: i + 1, issue: 'Hardcoded DB connection string with credentials' });
                   break;
                 }
               }
@@ -229,12 +244,25 @@ export async function check(context) {
     if (foundBad && foundGood) {
       return { checkId, status: 'fail', confidence: 'high', message: 'Hardcoded DB credentials detected alongside some env var usage', findings };
     }
-    if (hasDbDep) {
-      return { checkId, status: 'check-it', confidence: 'medium', message: 'DB dependency found but could not verify config (no recognized patterns)', findings: [] };
+
+    // No definitive patterns found
+    if (!hasDbDep) {
+      return { checkId, status: 'not-applicable', confidence: 'medium', message: 'No database dependency or DB-related files found', findings: [] };
     }
-    return { checkId, status: 'check-it', confidence: 'low', message: 'Could not determine DB configuration', findings: [] };
+
+    const hasAppLevelFile = sourceFiles.some(isAppLevelPath);
+    if (!hasAppLevelFile) {
+      return { checkId, status: 'not-applicable', confidence: 'medium', message: 'DB-related code appears to be library or example-only', findings: [] };
+    }
+
+    const scannedFindings = sourceFiles.slice(0, 3).map(file => ({
+      file,
+      issue: 'Scanned for DB config patterns but none were recognized'
+    }));
+    return { checkId, status: 'check-it', confidence: 'medium', message: 'DB dependency found but could not verify env-based configuration in scanned files', findings: scannedFindings };
 
   } catch (err) {
+    console.error(`[database-config] error:`, err);
     return { checkId, status: 'check-it', confidence: 'low', message: `Error: ${err.message}`, findings: [] };
   }
 }
