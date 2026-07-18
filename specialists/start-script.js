@@ -1,162 +1,85 @@
-/**
- * Specialist: Start Script Check
- * Checks whether package.json has a valid start, serve, or start:prod script.
- *
- * Strategy:
- *   1. Libraries & server frameworks → not-applicable (they don't need start scripts)
- *   2. Monorepos → check-it (start script is in a sub-package, not root)
- *   3. Has start/serve/start:prod → pass
- *   4. Everything else without a start script → fail
- */
-
 export const checkId = 'start-script';
 export const name = 'Start Script Present';
 export const appliesTo = ['all'];
 
-// ── Well-known library monorepos (root pkg.json lacks library signals) ──
-const KNOWN_LIBRARY_MONOREPOS = [
-  'facebook/react',
-  'vuejs/vue',
-  'vuejs/core',
-  'angular/angular',
-  'sveltejs/svelte',
-  'preactjs/preact',
-  'solidjs/solid',
-  'lit/lit',
-];
-
-// ── Well-known server frameworks (importable modules, not standalone apps) ──
-const KNOWN_SERVER_FRAMEWORKS = ['express', 'fastify', 'koa', 'hono', '@hono/node-server'];
-
-/**
- * Detect UI libraries even when the root package.json lacks obvious signals.
- * Many library monorepos (React, Vue) have a generic root package.json —
- * the actual library is in packages/react/, packages/vue/, etc.
- */
-function isLibraryLike(pkg, owner, repo) {
-  if (!pkg) return false;
-
-  // Match by owner/repo (e.g. facebook/react = React library)
-  const fullName = `${owner || ''}/${repo || ''}`.toLowerCase();
-  if (KNOWN_LIBRARY_MONOREPOS.some(n => fullName.includes(n))) return true;
-
-  // Match by package name
-  const name = (pkg.name || '').toLowerCase();
-  if (/^react$|^vue$|^angular$|^svelte$|^preact$|^solid-js$|^lit$/.test(name)) return true;
-
-  // peerDependencies + UI keywords = library
-  if (pkg.peerDependencies) {
-    const kw = pkg.keywords || [];
-    if (kw.some(k => /component|library|ui|react|vue|angular|svelte/.test(k))) return true;
-  }
-
-  // Explicit "library" keyword
-  const keywords = pkg.keywords || [];
-  if (keywords.some(k => /\blibrary\b/.test(k))) return true;
-
-  return false;
+function isPlaceholderScript(script) {
+  return typeof script !== 'string' || script.trim().length <= 3 || script.toLowerCase().includes('todo');
 }
 
-/**
- * Detect server frameworks that apps import (Express, Fastify, Koa, Hono).
- * These don't need a start script — they ARE the framework, not the app.
- */
-function isServerFramework(pkg) {
+function isLibraryFrameworkOrTool(pkg) {
   if (!pkg) return false;
 
-  const name = (pkg.name || '').toLowerCase();
+  const name = String(pkg.name || '').toLowerCase();
+  const keywords = (pkg.keywords || []).map(k => String(k).toLowerCase());
 
-  // Match by exact package name
-  if (KNOWN_SERVER_FRAMEWORKS.includes(name)) return true;
+  if (pkg.bin) return true;
+  if (name.startsWith('@types/')) return true;
+  if (/^(eslint|babel-plugin|rollup-plugin|vite-plugin|webpack-plugin|jest-|vitest-plugin|drizzle-|prisma|tslint-plugin|postcss-plugin|unplugin)/.test(name)) return true;
+  if (/(plugin|loader|preset|middleware|adapter)$/.test(name)) return true;
 
-  // Framework keyword + server/http keyword + main entry
-  const keywords = pkg.keywords || [];
-  if (pkg.main && keywords.some(k => /\bframework\b/.test(k))) {
-    if (keywords.some(k => /\b(server|http|rest|router|middleware)\b/.test(k))) {
-      return true;
-    }
+  const hasFrameworkKw = keywords.some(k => /\bframework\b/.test(k));
+  const hasServerKw = keywords.some(k => /\b(server|http|rest|router|middleware|api|microservice|grpc|websocket|tcp|udp)\b/.test(k));
+  if (hasFrameworkKw && hasServerKw) return true;
+
+  if (pkg.peerDependencies && Object.keys(pkg.peerDependencies).length > 0) return true;
+
+  const libToolKw = /\b(library|plugin|tool|cli|compiler|transpiler|bundler|formatter|linter|middleware|module|package|preset|loader|util|utility|sdk|core|platform|adapter|orm|db|database|types|interface|spec|testing)\b/;
+  if (keywords.some(k => libToolKw.test(k))) {
+    const appKw = /\b(app|application|website|webapp|cms|blog|starter|template|dashboard|deploy|demo|example|sample|homepage|portfolio|store|shop|portal|landing)\b/;
+    if (!keywords.some(k => appKw.test(k))) return true;
+  }
+
+  const hasMain = !!pkg.main;
+  const looksPublished = hasMain && !!(pkg.types || pkg.typings || pkg.publishConfig || (pkg.files && pkg.files.length > 0));
+  if (looksPublished && !pkg.scripts?.start) {
+    const modKw = /\b(framework|sdk|api-client|client|server|library|module|core|platform|adapter|tool|util|types|orm|db|database)\b/;
+    if (keywords.some(k => modKw.test(k))) return true;
+    const appKw = /\b(app|application|website|webapp|cms|blog|starter|template|dashboard|deploy|demo|example|sample)\b/;
+    if (!keywords.some(k => appKw.test(k))) return true;
   }
 
   return false;
 }
 
-/**
- * Detect monorepos. Root package.json often has no start script because
- * individual apps live in packages/* or apps/* and have their own start scripts.
- */
-async function isMonorepo(pkg, tree, files) {
+function isAppPackage(pkg) {
   if (!pkg) return false;
+  const keywords = (pkg.keywords || []).map(k => String(k).toLowerCase());
+  const appKw = /\b(app|application|website|webapp|cms|blog|starter|template|dashboard|deploy|demo|example|sample|homepage|portfolio|store|shop|portal|landing)\b/;
+  if (keywords.some(k => appKw.test(k))) return true;
 
-  // npm/yarn workspaces defined in package.json
-  if (pkg.workspaces) return true;
+  const name = String(pkg.name || '').toLowerCase();
+  if (/(app|web|client|frontend|admin|dashboard|site|portal|www)$/.test(name)) return true;
 
-  // pnpm workspaces (defined in pnpm-workspace.yaml, not package.json)
-  // Check tree first, then try files.get() if tree is empty/unreliable
-  if (tree && tree.some(p => p === 'pnpm-workspace.yaml')) return true;
-  if (files) {
-    try {
-      const pnpmWs = await files.get('pnpm-workspace.yaml');
-      if (pnpmWs) return true;
-    } catch { /* ignore */ }
-  }
+  return false;
+}
 
-  // Monorepo tooling
-  const devDeps = pkg.devDependencies || {};
-  const allDeps = { ...pkg.dependencies, ...devDeps };
+function isMonorepo(pkg, tree) {
+  if (!pkg && !tree) return false;
+  if (pkg?.workspaces) return true;
+  if (tree?.some(p => p === 'pnpm-workspace.yaml')) return true;
+  const devDeps = pkg?.devDependencies || {};
+  const deps = pkg?.dependencies || {};
   const monoTools = ['turbo', 'lerna', 'nx', '@nrwl/workspace', '@nx/workspace'];
-  if (monoTools.some(t => t in devDeps || t in allDeps)) return true;
-
-  // Monorepo directory structure
-  if (tree) {
-    if (tree.some(p => p === 'packages/' || p.startsWith('packages/'))) return true;
-    if (tree.some(p => p === 'apps/' || p.startsWith('apps/'))) return true;
-  }
-
+  if (monoTools.some(t => t in devDeps || t in deps)) return true;
+  if (tree?.some(p => p === 'packages/' || p.startsWith('packages/') || p === 'apps/' || p.startsWith('apps/') || p === 'services/' || p.startsWith('services/'))) return true;
   return false;
 }
 
 export async function check(context) {
-  const { tree, files, repoType, owner, repo } = context;
+  const { tree, files, packageJson, repoType } = context;
 
-  // ── AGGRESSIVE FALLBACK: packageJson is null, try everything ──
-  let packageJson = context.packageJson;
-
-  if (!packageJson) {
-    // Attempt 1: engine's files.get() — fastest if available
-    if (files && typeof files.get === 'function') {
-      try {
-        const raw = await files.get('package.json');
-        if (raw) packageJson = JSON.parse(raw);
-      } catch { /* ignore, try next */ }
-    }
-
-    // Attempt 2: direct fetch from raw.githubusercontent.com
-    // This bypasses any issues with the engine's files object
-    if (!packageJson && owner && repo) {
-      for (const branch of ['HEAD', 'main', 'master']) {
-        try {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 5000);
-          const res = await fetch(
-            `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/package.json`,
-            { signal: controller.signal }
-          );
-          clearTimeout(timeout);
-          if (res.ok) {
-            const text = await res.text();
-            if (text) {
-              packageJson = JSON.parse(text);
-              break;
-            }
-          }
-        } catch { /* ignore, try next branch */ }
-      }
+  let pkg = packageJson;
+  if (!pkg && files && typeof files.get === 'function') {
+    try {
+      const raw = await files.get('package.json');
+      if (raw) pkg = JSON.parse(raw);
+    } catch (e) {
+      console.error('Error reading package.json via files.get:', e);
     }
   }
 
   try {
-    // ── Empty repos ──
-    if (repoType === 'empty') {
+    if (repoType === 'empty' || !tree || tree.length === 0) {
       return {
         checkId,
         status: 'not-applicable',
@@ -166,119 +89,193 @@ export async function check(context) {
       };
     }
 
-    // ── No package.json at all ──
-    if (!packageJson) {
-      return {
-        checkId,
-        status: 'check-it',
-        confidence: 'low',
-        message: 'No package.json found',
-        findings: [],
-      };
-    }
-
-    const scripts = packageJson.scripts || {};
-
-    // Use 'in' operator to detect empty-string scripts (empty string is falsy in JS)
-    const hasStart = 'start' in scripts;
-    const hasServe = 'serve' in scripts;
-    const hasStartProd = 'start:prod' in scripts;
-
-    // Get actual script values (preserving empty strings)
-    const startVal = scripts.start;
-    const serveVal = scripts.serve;
-    const startProdVal = scripts['start:prod'];
-
-    // ── Determine what kind of repo this really is ──
-    const libraryLike = isLibraryLike(packageJson, owner, repo);
-    const serverFramework = isServerFramework(packageJson);
-    const monorepo = await isMonorepo(packageJson, tree, files);
-    const effectiveType = (repoType === 'library' || libraryLike) ? 'library' : repoType;
-
-    // ── UI library — start script is optional ──
-    if (effectiveType === 'library') {
-      if (hasStart || hasServe || hasStartProd) {
-        return {
-          checkId,
-          status: 'pass',
-          confidence: 'high',
-          message: 'Library has start/serve script',
-          findings: [],
-        };
-      }
+    if (!pkg) {
       return {
         checkId,
         status: 'not-applicable',
         confidence: 'high',
-        message: 'UI library — start script not required',
+        message: 'No package.json found — start script check not applicable',
         findings: [],
       };
     }
 
-    // ── Has a start/serve/start:prod script ──
-    if (hasStart || hasServe || hasStartProd) {
-      const script = hasStart ? startVal : hasServe ? serveVal : startProdVal;
-      const isPlaceholder = script.length <= 3 || script.includes('TODO');
+    const scripts = pkg.scripts || {};
+    const startKeys = ['start', 'serve', 'start:prod'];
+    let activeScript = null;
 
-      if (!isPlaceholder) {
+    for (const key of startKeys) {
+      if (key in scripts) {
+        activeScript = scripts[key];
+        break;
+      }
+    }
+
+    if (activeScript !== null) {
+      if (!isPlaceholderScript(activeScript)) {
         return {
           checkId,
           status: 'pass',
           confidence: 'high',
-          message: `Start script found: "${script}"`,
+          message: `Start script found: "${activeScript}"`,
           findings: [],
         };
       }
-
       return {
         checkId,
         status: 'check-it',
         confidence: 'medium',
-        message: `Start script may be placeholder: "${script}"`,
+        message: `Start script may be placeholder: "${activeScript}"`,
         findings: [{ file: 'package.json', issue: 'Start script appears to be a placeholder' }],
       };
     }
 
-    // ── No start script found — determine appropriate status ──
-
-    // Server frameworks (Express, Fastify, Koa, Hono) are importable modules
-    if (serverFramework) {
+    if (isLibraryFrameworkOrTool(pkg)) {
       return {
         checkId,
         status: 'not-applicable',
         confidence: 'high',
-        message: 'Server framework — start script not required at root',
+        message: 'Library, framework, or tool package — start script not required',
         findings: [],
       };
     }
 
-    // ── Monorepos: look for dev/start scripts at root or in turbo config ──
-    if (monorepo) {
-      const hasDev = 'dev' in scripts;
-      const devVal = scripts.dev;
+    if (repoType === 'library' || repoType === 'tool') {
+      return {
+        checkId,
+        status: 'not-applicable',
+        confidence: 'high',
+        message: `${repoType === 'library' ? 'Library' : 'Tool'} — start script not required`,
+        findings: [],
+      };
+    }
 
-      // Monorepo with a dev script → pass (dev is the modern start)
-      if (hasDev && devVal && devVal.length > 3 && !devVal.includes('TODO')) {
+    const monorepo = isMonorepo(pkg, tree);
+
+    if (monorepo) {
+      if (scripts.dev && typeof scripts.dev === 'string' && !isPlaceholderScript(scripts.dev)) {
         return {
           checkId,
           status: 'pass',
           confidence: 'high',
-          message: `Monorepo start script found: "${devVal}"`,
+          message: `Monorepo start script found: "${scripts.dev}"`,
           findings: [],
         };
       }
 
-      // No recognizable start mechanism at root → check-it
+      const hasAppsDir = tree.some(p => p.startsWith('apps/'));
+      const hasServicesDir = tree.some(p => p.startsWith('services/'));
+      const hasPackagesDir = tree.some(p => p.startsWith('packages/'));
+
+      let foundSubStart = false;
+      let appLikeCount = 0;
+      let libCount = 0;
+      let reads = 0;
+      const maxReads = 12;
+
+      const dirsToScan = [];
+      if (hasAppsDir) dirsToScan.push('apps/');
+      if (hasServicesDir) dirsToScan.push('services/');
+      if (hasPackagesDir) dirsToScan.push('packages/');
+
+      for (const dir of dirsToScan) {
+        const subPkgs = tree.filter(p => p.startsWith(dir) && p.endsWith('/package.json') && p.slice(dir.length).split('/').length === 2);
+
+        for (const subPath of subPkgs) {
+          if (reads >= maxReads) break;
+          reads++;
+          try {
+            const content = await files.get(subPath);
+            if (!content) continue;
+            const sub = JSON.parse(content);
+            const subScripts = sub.scripts || {};
+            const subStart = subScripts.start || subScripts.serve || subScripts['start:prod'] || subScripts.dev;
+            if (typeof subStart === 'string' && !isPlaceholderScript(subStart)) {
+              foundSubStart = true;
+              break;
+            }
+
+            const inAppDir = dir === 'apps/' || dir === 'services/';
+            if (isAppPackage(sub)) {
+              appLikeCount++;
+            } else if (isLibraryFrameworkOrTool(sub)) {
+              libCount++;
+            } else if (inAppDir) {
+              appLikeCount++;
+            }
+          } catch (e) {
+            console.error(`Error reading ${subPath}:`, e);
+          }
+        }
+        if (foundSubStart) break;
+      }
+
+      if (foundSubStart) {
+        return {
+          checkId,
+          status: 'pass',
+          confidence: 'high',
+          message: 'Monorepo — start script found in sub-package',
+          findings: [],
+        };
+      }
+
+      if (appLikeCount > 0) {
+        return {
+          checkId,
+          status: 'fail',
+          confidence: 'high',
+          message: 'App monorepo — no start script found in root or app sub-packages',
+          findings: [{ file: 'package.json', issue: 'Missing start script in app monorepo' }],
+        };
+      }
+
+      if (libCount > 0 || (hasPackagesDir && !hasAppsDir && !hasServicesDir)) {
+        return {
+          checkId,
+          status: 'not-applicable',
+          confidence: 'high',
+          message: 'Library/framework/tool monorepo — start script not required',
+          findings: [],
+        };
+      }
+
       return {
         checkId,
-        status: 'check-it',
+        status: 'not-applicable',
         confidence: 'medium',
-        message: 'Monorepo — no root start script found (may be in a sub-package)',
-        findings: [{ file: 'package.json', issue: 'No root start script — check individual packages/' }],
+        message: 'Monorepo with no deployment start script required',
+        findings: [],
       };
     }
 
-    // ── Genuine failure: non-library, non-monorepo, non-framework with no start script ──
+    if (tree.includes('Procfile')) {
+      return {
+        checkId,
+        status: 'pass',
+        confidence: 'high',
+        message: 'Procfile found — deployment entrypoint present',
+        findings: [],
+      };
+    }
+
+    const dockerfile = tree.find(p => p === 'Dockerfile' || p.endsWith('/Dockerfile'));
+    if (dockerfile) {
+      try {
+        const content = await files.get(dockerfile);
+        if (content && /^\s*(CMD|ENTRYPOINT)\s/im.test(content)) {
+          return {
+            checkId,
+            status: 'pass',
+            confidence: 'high',
+            message: 'Dockerfile with CMD/ENTRYPOINT found — deployment entrypoint present',
+            findings: [],
+          };
+        }
+      } catch (e) {
+        console.error('Error reading Dockerfile:', e);
+      }
+    }
+
     return {
       checkId,
       status: 'fail',
@@ -286,13 +283,13 @@ export async function check(context) {
       message: 'No start script found in package.json',
       findings: [{ file: 'package.json', issue: 'Missing "start" script — required for deployment' }],
     };
-
   } catch (err) {
+    console.error('start-script specialist error:', err);
     return {
       checkId,
       status: 'check-it',
       confidence: 'low',
-      message: `Error: ${err.message}`,
+      message: `Error during check: ${err.message}`,
       findings: [],
     };
   }
