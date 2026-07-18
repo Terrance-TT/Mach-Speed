@@ -39,6 +39,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { installFetchMiddleware } from './auto-heal.js';
+import { pool } from './repo-cache.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,6 +50,7 @@ const TEMPERATURE = 1; // the current Kimi catalog rejects anything else ("only 
 const MAX_THREAD_MESSAGES = 2;     // prior exchanges kept per specialist (bounds token cost)
 const CALL_SPACING_MS = 1_500;     // polite spacing between Moonshot calls
 const CALL_TIMEOUT_MS = 12 * 60_000; // hard cap per completion call (streaming makes this generous)
+const FIX_CONCURRENCY = 3;         // specialists fixed in parallel (429-handler paces the account)
 export const STATE_BRANCH = 'auto-fix-state';
 
 // Read an OpenAI-style SSE stream (data: {...}\n\n ... data: [DONE]) and
@@ -510,7 +512,7 @@ export function scanEvidence(evidenceDir) {
 
 // ── Fix one specialist (Moonshot call + validation + optional retry) ──
 async function fixSpecialist(checkId, severity, evidenceMd, ctx) {
-  const { moonshot, threads, repoRoot, retries } = ctx;
+  const { moonshot, threads, repoRoot, retries, saveLock } = ctx;
   const specPath = path.join(repoRoot, 'specialists', `${checkId}.js`);
   if (!fs.existsSync(specPath)) {
     return { checkId, ok: false, reason: `specialists/${checkId}.js not found — skipped` };
@@ -533,7 +535,7 @@ async function fixSpecialist(checkId, severity, evidenceMd, ctx) {
     }
 
     if (problems.length === 0) {
-      await threads.save(checkId, messages.slice(1)); // persist without the system prompt
+      await saveLock(() => threads.save(checkId, messages.slice(1))); // persist without the system prompt
       return { checkId, ok: true, code, rounds: round + 1 };
     }
 
@@ -543,7 +545,7 @@ async function fixSpecialist(checkId, severity, evidenceMd, ctx) {
         `Your previous reply failed validation:\n${problems.map(p => `- ${p}`).join('\n')}\n\n` +
         `Return the COMPLETE corrected module in ONE \`\`\`javascript code block, fixing these issues. No prose.` });
     } else {
-      await threads.save(checkId, messages.slice(1));
+      await saveLock(() => threads.save(checkId, messages.slice(1)));
       return { checkId, ok: false, reason: `validation failed after ${retries + 1} attempt(s): ${problems.join('; ')}` };
     }
   }
@@ -623,18 +625,22 @@ export async function autofix(argv = process.argv.slice(2)) {
   fs.mkdirSync(opt.out, { recursive: true });
 
   const fixed = [], failed = [];
-  for (const item of queue) {
+  // Thread saves commit to the shared state branch — serialize them (the Moonshot
+  // chats themselves run FIX_CONCURRENCY-wide) so concurrent branch commits can't race.
+  let saveChain = Promise.resolve();
+  const saveLock = (fn) => { const p = saveChain.then(fn); saveChain = p.catch(() => {}); return p; };
+  await pool(queue, FIX_CONCURRENCY, async (item, ctrl) => {
     const { checkId, severityScore } = item;
     console.log(`  Fixing ${checkId} (severity ${severityScore})...`);
     const evidenceMd = fs.readFileSync(path.join(opt.evidence, `${checkId}.md`), 'utf8');
     try {
       const result = await fixSpecialist(checkId, severityScore, evidenceMd, {
-        moonshot, threads, repoRoot, retries: opt.retries,
+        moonshot, threads, repoRoot, retries: opt.retries, saveLock,
       });
       if (!result.ok) {
         console.log(`    [${checkId}] SKIPPED: ${result.reason}`);
         failed.push({ checkId, reason: result.reason });
-        continue;
+        return;
       }
       fs.writeFileSync(path.join(opt.out, `${checkId}.js`), result.code);
 
@@ -657,16 +663,15 @@ export async function autofix(argv = process.argv.slice(2)) {
       failed.push({ checkId, reason: err.message });
       if (err.fatalPermission) {
         console.error('\n  ABORTING EARLY: Moonshot permission denied is account-wide — no specialist can succeed.');
-        break;
-      }
-      if (/429|rate limit/i.test(err.message)) {
+        ctrl.stop();
+      } else if (/429|rate limit/i.test(err.message)) {
         console.error('\n  ABORTING EARLY: the Moonshot rate limit persists after waiting.');
         console.error('  Your account tier is throttling requests — check https://platform.moonshot.ai/console/limits');
         console.error('  Nothing was lost: threads keep their memory and the next scheduled run resumes.');
-        break;
+        ctrl.stop();
       }
     }
-  }
+  });
 
   // ── Report ──
   const report = {
