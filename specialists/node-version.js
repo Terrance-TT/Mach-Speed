@@ -7,10 +7,6 @@ export const checkId = 'node-version';
 export const name = 'Node.js Version Specified';
 export const appliesTo = ['all'];
 
-/**
- * Extract the first non-comment, non-empty line from a version file.
- * Handles files that may contain comments (lines starting with #).
- */
 function extractVersion(content) {
   if (!content) return null;
   const lines = content.split(/\r?\n/);
@@ -23,11 +19,16 @@ function extractVersion(content) {
   return null;
 }
 
+function isExcludedPath(p) {
+  const excluded = ['node_modules', '.git', 'dist', 'build', 'coverage', 'tmp', 'out', 'public', 'static', 'vendor', 'fixtures', '__fixtures__', '__mocks__', '.next', '.turbo', '.svelte-kit'];
+  return excluded.some(d => p.includes(`/${d}/`) || p.startsWith(`${d}/`));
+}
+
 export async function check(context) {
   const { tree, files, packageJson } = context;
 
   try {
-    // 1. Check engines.node in package.json
+    // 1. Root package.json via context
     if (packageJson?.engines?.node) {
       return {
         checkId,
@@ -37,8 +38,6 @@ export async function check(context) {
         findings: [],
       };
     }
-
-    // 2. Check volta.node in package.json
     if (packageJson?.volta?.node) {
       return {
         checkId,
@@ -49,23 +48,27 @@ export async function check(context) {
       };
     }
 
-    // 3. Monorepo: check sub-package package.json files for engines.node
-    // Root may not have engines, but sub-packages often do (e.g., nuxt/packages/nuxt)
-    const subPkgPaths = tree.filter(p =>
-      /^(?:packages|apps|workspaces|libs)\/[^/]+\/package\.json$/.test(p)
-    );
-    const checkLimit = Math.min(subPkgPaths.length, 5); // cap to avoid perf issues
-    for (let i = 0; i < checkLimit; i++) {
-      const subContent = await files.get(subPkgPaths[i]);
-      if (subContent) {
+    // 2. If root package.json exists but wasn't parsed by context, try reading it directly
+    if (!packageJson && tree.includes('package.json')) {
+      const rootContent = await files.get('package.json');
+      if (rootContent) {
         try {
-          const subPkg = JSON.parse(subContent);
-          if (subPkg.engines?.node) {
+          const rootPkg = JSON.parse(rootContent);
+          if (rootPkg.engines?.node) {
             return {
               checkId,
               status: 'pass',
               confidence: 'high',
-              message: `Node version in ${subPkgPaths[i]}: "${subPkg.engines.node}"`,
+              message: `Node version: "${rootPkg.engines.node}"`,
+              findings: [],
+            };
+          }
+          if (rootPkg.volta?.node) {
+            return {
+              checkId,
+              status: 'pass',
+              confidence: 'high',
+              message: `Node version in volta: "${rootPkg.volta.node}"`,
               findings: [],
             };
           }
@@ -73,41 +76,73 @@ export async function check(context) {
       }
     }
 
-    // 4. Check .nvmrc file
-    if (tree.includes('.nvmrc')) {
-      const content = await files.get('.nvmrc');
+    // 3. Broad search for package.json files with engines.node / volta.node
+    const pkgPaths = tree
+      .filter(p => p.endsWith('package.json') && p !== 'package.json' && !isExcludedPath(p))
+      .sort((a, b) => a.split('/').length - b.split('/').length);
+    const pkgCap = Math.min(pkgPaths.length, 15);
+    for (let i = 0; i < pkgCap; i++) {
+      const content = await files.get(pkgPaths[i]);
+      if (!content) continue;
+      try {
+        const pkg = JSON.parse(content);
+        if (pkg.engines?.node) {
+          return {
+            checkId,
+            status: 'pass',
+            confidence: 'high',
+            message: `Node version in ${pkgPaths[i]}: "${pkg.engines.node}"`,
+            findings: [],
+          };
+        }
+        if (pkg.volta?.node) {
+          return {
+            checkId,
+            status: 'pass',
+            confidence: 'high',
+            message: `Node version in ${pkgPaths[i]} (volta): "${pkg.volta.node}"`,
+            findings: [],
+          };
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    // 4. .nvmrc anywhere in tree
+    const nvmrcPaths = tree.filter(p => (p === '.nvmrc' || p.endsWith('/.nvmrc')) && !isExcludedPath(p));
+    for (const p of nvmrcPaths.slice(0, 3)) {
+      const content = await files.get(p);
       const version = extractVersion(content);
       if (version) {
         return {
           checkId,
           status: 'pass',
           confidence: 'high',
-          message: `Node version in .nvmrc: "${version}"`,
+          message: `Node version in ${p}: "${version}"`,
           findings: [],
         };
       }
-      // Empty/comment-only file — fall through to next check
     }
 
-    // 5. Check .node-version file
-    if (tree.includes('.node-version')) {
-      const content = await files.get('.node-version');
+    // 5. .node-version anywhere in tree
+    const nodeVersionPaths = tree.filter(p => (p === '.node-version' || p.endsWith('/.node-version')) && !isExcludedPath(p));
+    for (const p of nodeVersionPaths.slice(0, 3)) {
+      const content = await files.get(p);
       const version = extractVersion(content);
       if (version) {
         return {
           checkId,
           status: 'pass',
           confidence: 'high',
-          message: `Node version in .node-version: "${version}"`,
+          message: `Node version in ${p}: "${version}"`,
           findings: [],
         };
       }
-      // Empty/comment-only file — fall through
     }
 
-    // 6. Check .tool-versions file (asdf)
-    if (tree.includes('.tool-versions')) {
-      const content = await files.get('.tool-versions');
+    // 6. .tool-versions (asdf) anywhere in tree
+    const toolVersionsPaths = tree.filter(p => (p === '.tool-versions' || p.endsWith('/.tool-versions')) && !isExcludedPath(p));
+    for (const p of toolVersionsPaths.slice(0, 3)) {
+      const content = await files.get(p);
       if (content) {
         const match = content.match(/^node(?:js)?\s+(.+)$/m);
         if (match) {
@@ -115,18 +150,55 @@ export async function check(context) {
             checkId,
             status: 'pass',
             confidence: 'high',
-            message: `Node version in .tool-versions: "${match[1].trim()}"`,
+            message: `Node version in ${p}: "${match[1].trim()}"`,
             findings: [],
           };
         }
       }
     }
 
-    // 7. Check Dockerfile for FROM node:X or FROM node (latest)
-    if (tree.includes('Dockerfile')) {
-      const content = await files.get('Dockerfile');
+    // 7. mise.toml / .mise.toml anywhere in tree
+    const misePaths = tree.filter(p => /(^|\/)mise\.toml$/.test(p) || /(^|\/)\.mise\.toml$/.test(p));
+    for (const p of misePaths.slice(0, 3)) {
+      const content = await files.get(p);
       if (content) {
-        // Match FROM node:tag or FROM node (whitespace/newline after)
+        const match = content.match(/^\s*node(?:js)?\s*=\s*["'](.+?)["']/m);
+        if (match) {
+          return {
+            checkId,
+            status: 'pass',
+            confidence: 'high',
+            message: `Node version in ${p}: "${match[1]}"`,
+            findings: [],
+          };
+        }
+      }
+    }
+
+    // 8. .npmrc (pnpm use-node-version) anywhere in tree
+    const npmrcPaths = tree.filter(p => (p === '.npmrc' || p.endsWith('/.npmrc')) && !isExcludedPath(p));
+    for (const p of npmrcPaths.slice(0, 3)) {
+      const content = await files.get(p);
+      if (content) {
+        const match = content.match(/^use-node-version\s*=\s*(.+)$/m);
+        if (match) {
+          return {
+            checkId,
+            status: 'pass',
+            confidence: 'high',
+            message: `Node version in ${p} (pnpm): "${match[1].trim()}"`,
+            findings: [],
+          };
+        }
+      }
+    }
+
+    // 9. Dockerfile / docker-compose anywhere in tree
+    const dockerPaths = tree.filter(p => /(^|\/)Dockerfile[^/]*$/.test(p) || /(^|\/)docker-compose[^/]*\.ya?ml$/.test(p));
+    for (const p of dockerPaths.slice(0, 5)) {
+      const content = await files.get(p);
+      if (!content) continue;
+      if (p.includes('Dockerfile')) {
         const match = content.match(/FROM\s+node(?::([^\s\n]+))?/i);
         if (match) {
           const tag = match[1] || 'latest';
@@ -134,32 +206,75 @@ export async function check(context) {
             checkId,
             status: 'pass',
             confidence: 'high',
-            message: `Node version in Dockerfile: "${tag}"`,
+            message: `Node version in ${p}: "${tag}"`,
+            findings: [],
+          };
+        }
+      }
+      if (p.includes('docker-compose')) {
+        const match = content.match(/image:\s*node(?::([^\s\n]+))?/i);
+        if (match) {
+          const tag = match[1] || 'latest';
+          return {
+            checkId,
+            status: 'pass',
+            confidence: 'high',
+            message: `Node version in ${p}: "${tag}"`,
             findings: [],
           };
         }
       }
     }
 
-    // Empty repo — no package.json and no version files to check
-    // Check the TREE (not just parsed packageJson) because parsing may have failed
-    const hasRelevantFiles = tree.includes('package.json') ||
-      tree.includes('.nvmrc') ||
-      tree.includes('.node-version') ||
-      tree.includes('.tool-versions') ||
-      tree.includes('Dockerfile');
+    // 10. GitHub Actions workflows
+    const workflowPaths = tree.filter(p => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p));
+    for (const p of workflowPaths.slice(0, 5)) {
+      const content = await files.get(p);
+      if (!content) continue;
+      const match = content.match(/node-version\s*:\s*["']?([^"\n]+?)["']?$/m);
+      if (match && /\d/.test(match[1])) {
+        return {
+          checkId,
+          status: 'pass',
+          confidence: 'high',
+          message: `Node version in ${p}: "${match[1].trim()}"`,
+          findings: [],
+        };
+      }
+      const matrixMatch = content.match(/\bnode\s*:\s*(?:\[\s*)?["']?(\d[^"\n\]]*)/m);
+      if (matrixMatch) {
+        return {
+          checkId,
+          status: 'pass',
+          confidence: 'high',
+          message: `Node version in ${p} (CI matrix): "${matrixMatch[1].trim()}"`,
+          findings: [],
+        };
+      }
+    }
+
+    // Determine applicability based on whether any relevant files exist anywhere in the tree
+    const hasRelevantFiles =
+      tree.includes('package.json') ||
+      pkgPaths.length > 0 ||
+      nvmrcPaths.length > 0 ||
+      nodeVersionPaths.length > 0 ||
+      toolVersionsPaths.length > 0 ||
+      misePaths.length > 0 ||
+      npmrcPaths.length > 0 ||
+      dockerPaths.length > 0 ||
+      workflowPaths.length > 0;
 
     if (!hasRelevantFiles) {
       return {
         checkId,
         status: 'not-applicable',
         confidence: 'high',
-        message: 'No package.json or version files found — empty repo',
+        message: 'No package.json or version files found',
         findings: [],
       };
     }
 
-    // Has relevant files but no version spec found
     return {
       checkId,
       status: 'check-it',
@@ -167,8 +282,8 @@ export async function check(context) {
       message: 'No Node.js version specified (add engines.node to package.json)',
       findings: [{ file: 'package.json', issue: 'Missing engines.node' }],
     };
-
   } catch (err) {
+    console.error(`[${checkId}] Error:`, err);
     return {
       checkId,
       status: 'check-it',
