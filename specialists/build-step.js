@@ -1,16 +1,3 @@
-/**
- * Specialist: Build Step Defined
- * Checks if package.json has a build script.
- *
- * Four-layer detection (most to least reliable):
- *   1. Read scripts from context.packageJson (fastest, most reliable)
- *   2. Fallback: read package.json via context.files.get() (handles upstream parse failures)
- *   3. Fallback: GitHub Contents API with base64 decode (different rate-limit bucket)
- *   4. Last resort: scan repo tree for build-tool config files (handles network issues)
- *
- * Server repos without build scripts → not-applicable (they're consumed as dependencies)
- */
-
 import { RepoType } from '../contract.js';
 
 export const checkId = 'build-step';
@@ -18,8 +5,8 @@ export const name = 'Build Step Defined';
 export const appliesTo = ['all'];
 
 /** Build-tool config files that imply a build step exists.
- *  Used when package.json cannot be read (network/rate-limit issues).
- *  Each pattern is tested against the full file path from the repo tree.
+ *  Stronger signals are listed first; weaker platform-only signals are omitted
+ *  to avoid false positives on pure JS runtime libraries.
  */
 const BUILD_INDICATORS = [
   // Framework configs (these ALWAYS have a build command)
@@ -43,6 +30,20 @@ const BUILD_INDICATORS = [
   { pattern: /(^|\/)brunch-config\./,       name: 'Brunch config' },
   { pattern: /(^|\/)fuse\./,                name: 'FuseBox config' },
 
+  // TypeScript / transpiler configs
+  { pattern: /(^|\/)tsconfig\.json$/,      name: 'TypeScript config' },
+  { pattern: /(^|\/)babel\.config\./,      name: 'Babel config' },
+  { pattern: /(^|\/)\.babelrc/,            name: 'Babel config' },
+  { pattern: /(^|\/)swc\.config\./,        name: 'SWC config' },
+  { pattern: /(^|\/)\.swcrc/,              name: 'SWC config' },
+
+  // Modern runtimes & platforms
+  { pattern: /(^|\/)deno\.jsonc?$/,        name: 'Deno config' },
+  { pattern: /(^|\/)bunfig\.toml$/,        name: 'Bun config' },
+  { pattern: /(^|\/)nitro\.config\./,      name: 'Nitro config' },
+  { pattern: /(^|\/)wrangler\.(toml|json)$/, name: 'Wrangler config' },
+  { pattern: /(^|\/)drizzle\.config\./,    name: 'Drizzle config' },
+
   // Monorepo build pipelines
   { pattern: /(^|\/)turbo\.json$/,         name: 'Turborepo config' },
   { pattern: /(^|\/)pnpm-workspace\.yaml$/, name: 'PNPM workspace' },
@@ -50,7 +51,7 @@ const BUILD_INDICATORS = [
   { pattern: /(^|\/)nx\.json$/,             name: 'Nx monorepo' },
   { pattern: /(^|\/)rush\.json$/,           name: 'Rush monorepo' },
 
-  // Container / CI / deployment configs (imply build steps)
+  // Container / deployment configs that imply image builds
   { pattern: /(^|\/)Dockerfile$/,          name: 'Dockerfile' },
   { pattern: /(^|\/)docker-compose/,       name: 'Docker Compose' },
   { pattern: /(^|\/)Makefile$/,            name: 'Makefile' },
@@ -61,15 +62,7 @@ const BUILD_INDICATORS = [
   { pattern: /(^|\/)fly\.toml$/,           name: 'Fly.io config' },
   { pattern: /(^|\/)app\.yaml$/,           name: 'App Engine config' },
   { pattern: /(^|\/)Procfile$/,            name: 'Heroku Procfile' },
-  { pattern: /\.github\/workflows\/.*\.(yml|yaml)$/, name: 'CI workflow' },
   { pattern: /(^|\/)cloudbuild\.yaml$/,    name: 'Cloud Build config' },
-  { pattern: /(^|\/)codesandbox\.json$/,   name: 'CodeSandbox config' },
-
-  // Transpiler / type-checker configs that imply a build step
-  { pattern: /(^|\/)babel\.config\./,      name: 'Babel config' },
-  { pattern: /(^|\/)\.babelrc/,            name: 'Babel config' },
-  { pattern: /(^|\/)swc\.config\./,        name: 'SWC config' },
-  { pattern: /(^|\/)\.swcrc/,              name: 'SWC config' },
 ];
 
 /**
@@ -87,21 +80,40 @@ function findBuildIndicator(tree) {
 }
 
 /**
- * Check if a parsed package.json has a recognised build script.
+ * Check if a parsed package.json scripts object has a recognised build script.
+ * Looks at script names and command values.
  */
-function extractBuildScript(pkg) {
-  const scripts = pkg?.scripts || {};
-  if (scripts.build)       return scripts.build;
-  if (scripts['build:prod']) return scripts['build:prod'];
-  if (scripts.compile)     return scripts.compile;
-  if (scripts['build:production']) return scripts['build:production'];
+function findBuildScript(scripts) {
+  if (!scripts || typeof scripts !== 'object') return null;
+
+  // Exact high-confidence matches
+  const exactKeys = ['build', 'compile', 'build:prod', 'build:production', 'build:main', 'build:fp', 'dist', 'bundle'];
+  for (const key of exactKeys) {
+    if (scripts[key]) return scripts[key];
+  }
+
+  // Name-based partial matches
+  const nameTokens = ['build', 'compile', 'dist', 'bundle', 'make'];
+  for (const [name, cmd] of Object.entries(scripts)) {
+    const lower = name.toLowerCase();
+    if (nameTokens.some(t => lower.includes(t))) {
+      return cmd;
+    }
+  }
+
+  // Command-based matches (build tools or explicit build invocations)
+  const buildCmdRe = /(?:^|\s)(?:tsc|tsx|vite|webpack|rollup|esbuild|swc|babel|turbo|nx|lerna|rush|make|cmake|gradle|mvn)\b|(?:^|\s)(?:cargo build|go build|dotnet build)|(?:next|nuxt|gatsby|remix|astro)\s+build|(?:npm run|pnpm|yarn)\s+(?:build|compile|dist|bundle)/i;
+  for (const [name, cmd] of Object.entries(scripts)) {
+    if (buildCmdRe.test(cmd)) {
+      return cmd;
+    }
+  }
+
   return null;
 }
 
 /**
  * Layer 3: Try the GitHub Contents API as a fallback when files.get() fails.
- * This uses a different endpoint (api.github.com) which has separate rate limits
- * from raw.githubusercontent.com.
  */
 async function fetchPackageJsonViaApi(owner, repo) {
   try {
@@ -116,7 +128,8 @@ async function fetchPackageJsonViaApi(owner, repo) {
       return JSON.parse(decoded);
     }
     return null;
-  } catch {
+  } catch (err) {
+    console.error('fetchPackageJsonViaApi failed:', err);
     return null;
   }
 }
@@ -134,15 +147,11 @@ export async function check(context) {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // LAYER 1: Use package.json from context (fastest, most reliable)
+    // LAYER 1-3: Resolve root package.json (context → files → API)
     // ═══════════════════════════════════════════════════════════════
-    let pkg = packageJson;
+    let rootPkg = packageJson;
 
-    // ═══════════════════════════════════════════════════════════════
-    // LAYER 2: Fallback — read package.json via files API
-    // Handles cases where upstream fetch/parse failed.
-    // ═══════════════════════════════════════════════════════════════
-    if (!pkg && files) {
+    if (!rootPkg && files) {
       const hasPkg = typeof files.has === 'function'
         ? files.has('package.json')
         : Array.isArray(tree) && tree.includes('package.json');
@@ -150,50 +159,69 @@ export async function check(context) {
       if (hasPkg && typeof files.get === 'function') {
         try {
           const content = await files.get('package.json');
-          if (content) pkg = JSON.parse(content);
-        } catch { /* ignore parse / network errors */ }
+          if (content) rootPkg = JSON.parse(content);
+        } catch (err) {
+          console.error('Error reading package.json via files API:', err);
+        }
       }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // LAYER 3: Fallback — GitHub Contents API
-    // Uses a different rate-limit bucket than raw.githubusercontent.com
-    // ═══════════════════════════════════════════════════════════════
-    if (!pkg && owner && repo) {
-      pkg = await fetchPackageJsonViaApi(owner, repo);
+    if (!rootPkg && owner && repo) {
+      rootPkg = await fetchPackageJsonViaApi(owner, repo);
     }
 
-    // ── We have package.json → check scripts ─────────────────────
-    if (pkg) {
-      const buildScript = extractBuildScript(pkg);
+    // ── Evaluate root scripts ────────────────────────────────────
+    let buildScript = null;
+    if (rootPkg?.scripts) {
+      buildScript = findBuildScript(rootPkg.scripts);
+    }
 
-      if (buildScript) {
-        return {
-          checkId, status: 'pass', confidence: 'high',
-          message: `Build script found: "${buildScript}"`, findings: [],
-        };
-      }
-
-      // Server frameworks (Express, Fastify, etc.) don't need a build step
-      // — they're consumed via require/import. Only fail if it's NOT a server.
-      if (repoType === RepoType.SERVER) {
-        return {
-          checkId, status: 'not-applicable', confidence: 'medium',
-          message: 'Server app — build step may not be required', findings: [],
-        };
-      }
-
+    if (buildScript) {
       return {
-        checkId, status: 'fail', confidence: 'high',
-        message: 'No build script found',
-        findings: [{ file: 'package.json', issue: 'Missing "build" script' }],
+        checkId, status: 'pass', confidence: 'high',
+        message: `Build script found: "${buildScript}"`, findings: [],
       };
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // LAYER 4: Last resort — scan tree for build-tool config files
-    // Handles network/rate-limit issues where package.json is unreadable
-    // but the GitHub tree API (which has higher rate limits) still works.
+    // Workspace / monorepo package.json scan (bounded reads)
+    // Prioritise packages/ and apps/ directories.
+    // ═══════════════════════════════════════════════════════════════
+    if (!buildScript && Array.isArray(tree) && files?.get) {
+      const candidates = tree
+        .filter(p => /(^|\/)package\.json$/.test(p) && p !== 'package.json')
+        .sort((a, b) => {
+          const score = (p) => {
+            if (/\bpackages?\//.test(p)) return 1;
+            if (/\bapps?\//.test(p)) return 2;
+            if (/\bexamples?\//.test(p)) return 3;
+            if (/\b(www|web|site|docs)\//.test(p)) return 4;
+            return 5;
+          };
+          return score(a) - score(b);
+        })
+        .slice(0, 10);
+
+      for (const pkgPath of candidates) {
+        try {
+          const content = await files.get(pkgPath);
+          if (!content) continue;
+          const pkg = JSON.parse(content);
+          const script = findBuildScript(pkg.scripts || {});
+          if (script) {
+            return {
+              checkId, status: 'pass', confidence: 'high',
+              message: `Build script found in workspace (${pkgPath}): "${script}"`, findings: [],
+            };
+          }
+        } catch (err) {
+          console.error(`Error reading workspace package ${pkgPath}:`, err);
+        }
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // LAYER 4: Scan repo tree for build-tool config files
     // ═══════════════════════════════════════════════════════════════
     const indicator = findBuildIndicator(tree);
     if (indicator) {
@@ -204,14 +232,37 @@ export async function check(context) {
       };
     }
 
+    // ── Decide whether a build step is actually required ─────────
+    const hasTsConfig = tree?.some(p => /(^|\/)tsconfig\.json$/.test(p));
+    const hasTypeScript = tree?.some(p => /\.([cm]?ts|tsx)$/.test(p) && !/\.d\.[cm]?ts$/.test(p));
+
+    if (!hasTsConfig && !hasTypeScript) {
+      // Pure JS runtime projects often don't need a build step
+      if (['library', 'framework', 'tool', 'server'].includes(repoType)) {
+        return {
+          checkId, status: 'not-applicable', confidence: 'medium',
+          message: 'Pure JS runtime project — no build step required', findings: [],
+        };
+      }
+    }
+
+    if (hasTsConfig || hasTypeScript) {
+      return {
+        checkId, status: 'fail', confidence: 'high',
+        message: 'TypeScript files detected but no build script or build configuration found',
+        findings: [{ file: 'package.json', issue: 'Missing build script for TypeScript compilation' }],
+      };
+    }
+
     // ── Nothing found anywhere ───────────────────────────────────
     return {
       checkId, status: 'check-it', confidence: 'low',
-      message: 'No package.json readable and no build indicators found in repo tree',
+      message: 'Unable to determine if a build step is needed',
       findings: [],
     };
 
   } catch (err) {
+    console.error('Build-step specialist error:', err);
     return {
       checkId, status: 'check-it', confidence: 'low',
       message: `Error: ${err.message}`, findings: [],
