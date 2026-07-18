@@ -384,7 +384,13 @@ function restoreCandidates(repoRoot, backups) {
 // ── Merge one verified winner (PR for audit trail -> squash merge -> delete branch) ──
 async function mergeWinner(gh, checkId, code, scoreComment) {
   const branch = `auto-fix/${checkId}`;
-  await gh.ensureBranch(branch, await gh.defaultBranchSha());
+  const baseSha = await gh.defaultBranchSha();
+  // Reusing a stale auto-fix/* branch makes the PR unmergeable: queued runs can be
+  // pinned to an older main, and meanwhile main may have merged another rewrite of
+  // the same specialist. Force-reset the branch to current main first, so the PR
+  // always applies cleanly. (This is what stranded PRs #11/#12.)
+  const existingSha = await gh.ensureBranch(branch, baseSha);
+  if (existingSha !== baseSha) await gh.resetBranch(branch, baseSha);
   await gh.putFile(`specialists/${checkId}.js`, code, branch,
     `auto-fix(${checkId}): verified rewrite (auto-verify gate passed)`);
   const pr = await gh.openOrUpdatePr(branch,
