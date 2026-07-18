@@ -25,6 +25,7 @@
 
 import { RepoType, SPECIALIST_REGISTRY } from './contract.js';
 import { analyzeRepo } from './central.js';
+import { prefetchRepos, createCachedFetch, pool, REPO_CACHE_ENV } from './repo-cache.js';
 import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -35,6 +36,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MIN_REPO_COVERAGE = 0.6;      // need >=60% of repos to succeed, else run is INCOMPLETE
 const MIN_SPECIALIST_RESULTS = 5;   // need >=5 results before pattern detection is trustworthy
 const REPO_TIMEOUT_MS = 240_000;    // max time to analyze a single repo
+const ANALYSIS_CONCURRENCY = 6;     // repos analyzed in parallel (snapshots make this cheap)
 const FETCH_MAX_RETRIES = 4;
 const FETCH_BASE_DELAY_MS = 1_000;
 const RATE_LIMIT_WAIT_CAP_MS = 60_000; // never sleep more than 60s waiting for a rate-limit reset
@@ -93,6 +95,16 @@ export function installFetchMiddleware({
       await sleep(wait);
     }
   };
+
+  // Repo snapshot cache: when MACH_SPEED_REPO_CACHE points at a directory of
+  // prefetched tarballs, trees/raw/metadata are served from disk — no network.
+  const cacheDir = process.env[REPO_CACHE_ENV];
+  if (cacheDir) {
+    // absolute, so child runner processes resolve the same directory regardless of cwd
+    const absCache = path.resolve(cacheDir);
+    globalThis.fetch = createCachedFetch(absCache, globalThis.fetch);
+    if (verbose) console.log(`    [fetch] repo snapshot cache active: ${absCache}`);
+  }
 
   globalThis.__machSpeedFetchPatched = true;
   return { token };
@@ -575,17 +587,28 @@ export async function autoheal(argv = process.argv.slice(2)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  // ── Phase 1: Run all tests ──
+  // ── Phase 0: snapshot every test repo once (parallel tarballs). The analyses
+  // below then read from disk instead of hammering the API for every file.
+  if (process.env[REPO_CACHE_ENV]) {
+    console.log('  Phase 0: snapshotting repos (parallel tarballs, one-time per job)...');
+    const pre = await prefetchRepos(testRepos, path.resolve(process.env[REPO_CACHE_ENV]), { token });
+    const ready = pre.ok.length + pre.cached.length;
+    console.log(`  Snapshots: ${ready}/${testRepos.length} ready` +
+      (pre.failed.length ? ` — ${pre.failed.length} failed (${pre.failed.map(f => f.slug).join(', ')}), those fetch live` : ''));
+    console.log('');
+  }
+
+  // ── Phase 1: Run all tests (parallel — snapshots make each repo cheap) ──
   console.log('  Phase 1: Testing specialists against public repos...');
   const allResults = [];
   const repoTypeMap = {};
   const errors = [];
 
-  for (const repo of testRepos) {
+  await pool(testRepos, ANALYSIS_CONCURRENCY, async (repo) => {
+    const slug = `${repo.owner}/${repo.repo}`;
     try {
-      process.stdout.write(`    ${repo.owner}/${repo.repo} ... `);
-      const result = await withTimeout(analyzeRepo(repo.owner, repo.repo), REPO_TIMEOUT_MS, `${repo.owner}/${repo.repo}`);
-      repoTypeMap[`${repo.owner}/${repo.repo}`] = result.repoType;
+      const result = await withTimeout(analyzeRepo(repo.owner, repo.repo), REPO_TIMEOUT_MS, slug);
+      repoTypeMap[slug] = result.repoType;
 
       for (const check of result.scorecard.checks) {
         allResults.push({
@@ -601,12 +624,12 @@ export async function autoheal(argv = process.argv.slice(2)) {
           weight: check.weight || 0,
         });
       }
-      console.log(`OK (${result.repoType})`);
+      console.log(`    ${slug} ... OK (${result.repoType})`);
     } catch (err) {
-      errors.push({ repo: `${repo.owner}/${repo.repo}`, error: err.message });
-      console.log(`ERROR: ${err.message}`);
+      errors.push({ repo: slug, error: err.message });
+      console.log(`    ${slug} ... ERROR: ${err.message}`);
     }
-  }
+  });
 
   // Wait a tick for any async cleanup
   await sleep(100);
