@@ -10,6 +10,8 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+env:
+  MACH_SPEED_REPO_CACHE: repo-cache   # snapshot dir shared by all steps in this job
 jobs:
   self-heal:
     runs-on: ubuntu-latest
@@ -30,14 +32,15 @@ jobs:
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           MOONSHOT_MODEL: kimi-k2.6
         run: node auto-fix.js --evidence ./evidence --out ./proposed --max-fixes 8
-        timeout-minutes: 90
+        timeout-minutes: 60
       - name: Run auto-verify (test, retry, merge only verified winners)
+        if: always()   # even if auto-fix timed out, verify whatever it produced
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           MOONSHOT_MODEL: kimi-k2.6
         run: node auto-verify.js --evidence ./evidence --proposed ./proposed --pr --rounds 2
-        timeout-minutes: 100
+        timeout-minutes: 75
       - name: Upload evidence + reports
         if: always()
         uses: actions/upload-artifact@v4
