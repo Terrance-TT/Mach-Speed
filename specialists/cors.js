@@ -1,197 +1,306 @@
-/**
- * Specialist: CORS Configuration
- * Checks if CORS is properly configured for server-side applications.
- */
-
-import { RepoType } from '../contract.js';
-
 export const checkId = 'cors';
 export const name = 'CORS Configured';
 export const appliesTo = ['deployable', 'server', 'framework'];
 
 const CORS_PATTERNS = [
-  /require\(['"]cors['"]\)/,
-  /import.*cors/,
-  /app\.use\s*\(\s*cors\s*\(/,
-  /cors\s*\(/,
+  /require\s*\(\s*['"][^'"]*cors['"]\s*\)/,
+  /import\s+.*?['"][^'"]*cors['"]/,
+  /from\s+['"][^'"]*cors['"]/,
   /access-control-allow-origin/i,
-  /cors\s*:\s*(true|{)/i,           // Config-based: { cors: true } or { cors: { ... } }
+  /access-control-allow-methods/i,
+  /access-control-allow-headers/i,
+  /access-control-allow-credentials/i,
+  /access-control-expose-headers/i,
+  /access-control-max-age/i,
+  /access-control-request/i,
+  /cors\s*:\s*(true|\{)/i,
+  /cors\s*\(/i,
+  /enableCors/i,
+  /allowedOrigins?/i,
+  /allowOrigin/i,
+  /corsOrigins?/i,
+  /use\s*\(\s*cors/i,
+  /register\s*\([^)]*cors/i,
+  /corsHandler/i,
+  /handleCors/i,
+  /withCors/i,
+  /setHeader\s*\(\s*['"]Access-Control/i,
+  /headers\s*\(\s*\)\s*\{[^}]*access-control/i,
 ];
 
-// Config files where frameworks often set CORS
-const CONFIG_FILE_PATTERNS = /\.(config|rc)\.(js|ts|mjs|cjs)$/;
-const API_ROUTE_PATTERNS = /(\/routes?\/|\/api\/|\.route\.)/i;
+const BACKEND_DEPS = ['express', 'fastify', 'koa', 'hono', 'elysia', 'hapi', 'sails', 'meteor', 'feathers', 'restify', 'polka', 'micro', 'connect', 'restana', '0http'];
 
-const LIBRARY_KEYWORDS = /\b(component|library|ui|react|vue|angular|svelte|util|helper|toolkit|sdk|plugin|module|functional)\b/i;
+const FRAMEWORK_CONFIG_PATTERNS = [
+  /(^|\/)next\.config\./i,
+  /(^|\/)nuxt\.config\./i,
+  /(^|\/)astro\.config\./i,
+  /(^|\/)gatsby-config\./i,
+  /(^|\/)blitz\.config\./i,
+  /(^|\/)svelte\.config\./i,
+  /(^|\/)remix\.config\./i,
+  /(^|\/)redwood\.toml/i,
+];
 
-// Well-known library package names (not apps/frameworks)
-const WELL_KNOWN_LIBS = /^(lodash|underscore|ramda|moment|dayjs|date-fns|chalk|debug|colors|qs|uuid|bcrypt|semver|glob|minimist|yargs|inquirer|ora|ms|mime|fresh|bytes|vary|methods|parseurl|path-to-regexp|merge-descriptors|content-type|cookie|cookie-signature|encodeurl|escape-html|http-errors|ipaddr\.js|media-typer|on-finished|proxy-addr|range-parser|raw-body|safe-buffer|safer-buffer|setprototypeof|statuses|type-is|unpipe|wrappy|yallist|lru-cache|ini|dotenv|cross-spawn|execa|which|is-[a-z-]+|has-[a-z-]+|p-[a-z-]+)$/i;
+const EXCLUDED_PATH_RX = /(^|\/)(node_modules|\.git|\.next|out|dist|build|coverage|\.tmp|test|tests|__tests__|spec|example|examples|demo|demos|fixtures|fixture|mock|mocks|docs|playground|storybook|e2e|cypress|vitest|jest|benchmark|benchmarks|perf)\//i;
 
-function isLibrary(packageJson) {
+function isTutorial(packageJson) {
   if (!packageJson) return false;
-  const name = packageJson.name || '';
-  const keywords = packageJson.keywords || [];
-  const deps = { ...packageJson.dependencies, ...packageJson.devDependencies } || {};
+  const text = [
+    packageJson.name,
+    packageJson.description,
+    ...(packageJson.keywords || []),
+  ].filter(Boolean).join(' ').toLowerCase();
+  return /\b(learn|learning|tutorial|tutorials|course|workshop|playground|starter[- ]?kit|boilerplate|template|templates|example|examples|sample|demo|demos|getting[- ]?started|how[- ]?to|guide|guides|walkthrough|training|teach|courseware|cheatsheet|introduction)\b/.test(text);
+}
 
-  // Signal 1: peerDependencies present (strong signal)
-  const hasPeerDeps = !!packageJson.peerDependencies &&
-    Object.keys(packageJson.peerDependencies).length > 0;
+function isLibraryOrFramework(packageJson, tree) {
+  if (!packageJson) return false;
 
-  // Signal 2: library keywords in package.json
-  const hasLibKeyword = keywords.some(k => LIBRARY_KEYWORDS.test(k));
+  const name = (packageJson.name || '').toLowerCase();
+  const keywords = (packageJson.keywords || []).map(k => k.toLowerCase());
+  const scripts = packageJson.scripts || {};
+  const isPrivate = packageJson.private === true;
 
-  // Signal 3: name contains "lib" as a word
-  const hasLibInName = /\blibs?\b/i.test(name);
+  const libKeywords = new Set([
+    'library', 'framework', 'middleware', 'plugin', 'toolkit', 'sdk',
+    'module', 'util', 'utils', 'tool', 'bundler', 'compiler', 'build-tool',
+    'router', 'server', 'client', 'component', 'components', 'ui', 'functional',
+    'helper', 'helpers', 'package', 'transform', 'loader', 'preset',
+  ]);
+  const hasLibKeyword = keywords.some(k => libKeywords.has(k));
 
-  // Signal 4: well-known library by name
-  const isWellKnownLib = WELL_KNOWN_LIBS.test(name);
+  const hasMain = !!(packageJson.main || packageJson.module || packageJson.exports || packageJson.typings || packageJson.types);
+  const hasVersion = !!packageJson.version;
 
-  // Signal 5: monorepo library root — private, no start/dev scripts, no server deps
-  // Library monorepos (React, Svelte) only build/test — no dev server.
-  // Deployable/framework monorepos (Astro, Supabase) have dev scripts to run apps.
-  const hasServerDep = !!(deps.express || deps.fastify || deps.koa || deps.hono || deps.next || deps.nuxt);
-  const hasStartScript = !!(packageJson.scripts && packageJson.scripts.start);
-  const hasDevScript = !!(packageJson.scripts && packageJson.scripts.dev);
-  const isMonorepoLib = packageJson.private === true && !hasStartScript && !hasServerDep && !hasDevScript;
+  const serverScripts = ['start', 'serve', 'start:prod', 'preview', 'deploy', 'deploy:prod'];
+  const hasServerScript = serverScripts.some(s => !!scripts[s]);
 
-  return hasPeerDeps || hasLibKeyword || hasLibInName || isWellKnownLib || isMonorepoLib;
+  const hasPeerDeps = !!(packageJson.peerDependencies && Object.keys(packageJson.peerDependencies).length > 0);
+
+  const hasPackagesDir = tree.some(p => /^packages\/[^/]+(?:\/|$)/.test(p));
+  const hasAppsDir = tree.some(p => /^(apps|services|clients|web|www|site|sites|server|api|studio|dashboard|admin|portal|frontend|backend|workers|edge-functions)\/[^/]+(?:\/|$)/.test(p));
+  const hasExamplesDir = tree.some(p => /^examples\/[^/]+(?:\/|$)/.test(p));
+  const hasTestDir = tree.some(p => /^(test|tests|__tests__|spec|specs)\/[^/]+(?:\/|$)/.test(p));
+
+  if (isPrivate && hasPackagesDir && !hasAppsDir && !hasServerScript) {
+    return true;
+  }
+
+  if ((packageJson.workspaces || tree.some(p => /^pnpm-workspace\.yaml$/.test(p))) && !hasServerScript && !hasAppsDir) {
+    return true;
+  }
+
+  if (hasMain && hasVersion && !hasServerScript && (hasLibKeyword || hasPeerDeps || hasExamplesDir)) {
+    return true;
+  }
+
+  if (hasExamplesDir && hasTestDir && !hasServerScript && !hasAppsDir) {
+    return true;
+  }
+
+  const wellKnownLibPattern = /^(axios|node-fetch|undici|ky|got|superagent|request|isomorphic-unfetch|cross-fetch|underscore|ramda|moment|dayjs|chalk|debug|colors|qs|uuid|bcrypt|semver|glob|minimist|yargs|inquirer|ora|ms|mime|fresh|bytes|vary|methods|parseurl|path-to-regexp|merge-descriptors|content-type|cookie|cookie-signature|encodeurl|escape-html|http-errors|ipaddr\.js|media-typer|on-finished|proxy-addr|range-parser|raw-body|safe-buffer|safer-buffer|setprototypeof|statuses|type-is|unpipe|wrappy|yallist|lru-cache|ini|dotenv|cross-spawn|execa|which)\b/i;
+  if (wellKnownLibPattern.test(name) && !hasServerScript) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasServerFootprint(tree, packageJson) {
+  if (!tree || tree.length === 0) return false;
+
+  if (packageJson && packageJson.dependencies) {
+    if (BACKEND_DEPS.some(d => packageJson.dependencies[d])) return true;
+  }
+
+  for (const p of tree) {
+    if (/(^|\/)node_modules\//.test(p)) continue;
+    if (EXCLUDED_PATH_RX.test(p)) continue;
+
+    if (/\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) {
+      if (/(^|\/)api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)pages\/api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)app\/api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)src\/(?:pages\/api|app\/api)\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)routes\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)server\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)controllers\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)middleware\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+
+      if (/^(src\/)?(server|app|listen|index|main|worker)\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) {
+        return true;
+      }
+    }
+
+    if (/^(vercel\.json|netlify\.toml|_headers|wrangler\.toml|fly\.toml|render\.yaml|app\.yaml|serverless\.yml)$/.test(p)) return true;
+  }
+
+  return false;
+}
+
+function isStaticContentSite(packageJson, tree) {
+  if (!packageJson) return false;
+  const deps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
+
+  const contentFrameworks = ['next', 'nuxt', 'gatsby', 'astro', 'hexo', 'vuepress', 'vitepress', 'docusaurus', 'eleventy'];
+  const hasContentFramework = contentFrameworks.some(f => deps[f]);
+
+  const hasApiRoutes = tree.some(p => /\/(api|apis|rest|graphql|trpc)\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p) && !/(^|\/)node_modules\//.test(p) && !EXCLUDED_PATH_RX.test(p));
+  const hasServerEntry = tree.some(p => /^(src\/)?(server|app|listen)\.(js|ts|mjs|cjs|mts|cts)$/.test(p) && !/(^|\/)node_modules\//.test(p));
+
+  if (hasContentFramework && !hasApiRoutes && !hasServerEntry) {
+    return true;
+  }
+
+  const contentFiles = tree.filter(p => /\.(md|mdx|html|css|scss|sass|less|styl)$/.test(p) && !/(^|\/)node_modules\//.test(p)).length;
+  const sourceFiles = tree.filter(p => /\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p) && !/(^|\/)node_modules\//.test(p)).length;
+
+  if (sourceFiles === 0 && contentFiles > 5) return true;
+  if (contentFiles > sourceFiles * 4 && !hasApiRoutes && !hasServerEntry) return true;
+
+  return false;
+}
+
+function isClearBackendApi(packageJson, tree) {
+  if (!packageJson) return false;
+  const deps = packageJson.dependencies || {};
+
+  const hasBackend = BACKEND_DEPS.some(d => deps[d]);
+  if (!hasBackend) return false;
+
+  const hasFullstackConfig = tree.some(p => FRAMEWORK_CONFIG_PATTERNS.some(rx => rx.test(p)) && !/(^|\/)node_modules\//.test(p));
+  if (hasFullstackConfig) return false;
+
+  const scripts = packageJson.scripts || {};
+  const hasServerScript = !!(scripts.start || scripts.serve || scripts['start:prod'] || scripts.preview);
+  if (!hasServerScript) return false;
+
+  if (!hasServerFootprint(tree, packageJson)) return false;
+  if (isLibraryOrFramework(packageJson, tree)) return false;
+
+  return true;
+}
+
+async function scanFilesForCors(tree, files) {
+  const candidates = [];
+
+  for (const p of tree) {
+    if (/(^|\/)node_modules\//.test(p)) continue;
+    if (EXCLUDED_PATH_RX.test(p)) continue;
+
+    let score = 0;
+
+    if (/\.config\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 100;
+    if (/^(vercel\.json|netlify\.toml|_headers|wrangler\.toml|fly\.toml|render\.yaml)$/.test(p)) score += 100;
+
+    if (/(^|\/)api\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 80;
+    if (/(^|\/)pages\/api\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 80;
+    if (/(^|\/)app\/api\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 80;
+
+    if (/^(src\/)?(server|app|listen|index|main|worker)\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 70;
+    if (/(^|\/)server\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 60;
+    if (/middleware\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 60;
+    if (/(^|\/)routes\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 50;
+
+    if (/\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) score += 10;
+
+    if (score > 0) candidates.push({ path: p, score });
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  for (const { path } of candidates.slice(0, 25)) {
+    const content = await files.get(path);
+    if (!content) continue;
+    for (const pat of CORS_PATTERNS) {
+      if (pat.test(content)) {
+        return path;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function scanSubPackagesForCorsDep(tree, files) {
+  const subPkgs = tree.filter(p => /(^|\/)package\.json$/.test(p) && !/(^|\/)node_modules\//.test(p));
+  for (const pkgPath of subPkgs.slice(0, 15)) {
+    if (pkgPath === 'package.json') continue;
+    const content = await files.get(pkgPath);
+    if (!content) continue;
+    try {
+      const subPkg = JSON.parse(content);
+      const deps = {
+        ...(subPkg.dependencies || {}),
+        ...(subPkg.devDependencies || {}),
+        ...(subPkg.peerDependencies || {}),
+      };
+      if (deps.cors || deps['@fastify/cors'] || deps['koa-cors'] || deps['@koa/cors']) {
+        return pkgPath;
+      }
+    } catch {
+      // ignore invalid JSON
+    }
+  }
+  return null;
 }
 
 export async function check(context) {
-  const { tree, files, packageJson, repoType } = context;
+  const { tree, files, packageJson } = context;
 
   try {
-    // Defensive: handle types that don't need CORS
-    if (repoType === RepoType.LIBRARY || repoType === RepoType.EMPTY || repoType === RepoType.TOOL) {
-      const reason = repoType === RepoType.EMPTY ? 'Empty repo' :
-                     repoType === RepoType.TOOL ? 'CLI tool' : 'Library';
-      return {
-        checkId,
-        status: 'not-applicable',
-        confidence: 'high',
-        message: `${reason} — CORS not applicable`,
-        findings: [],
-      };
+    if (!tree || tree.length === 0) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Empty repository', findings: [] };
     }
 
-    // Secondary defense: detect libraries even if classifier misclassified
-    if (isLibrary(packageJson)) {
-      return {
-        checkId,
-        status: 'not-applicable',
-        confidence: 'high',
-        message: 'Library (detected from package.json) — CORS not applicable',
-        findings: [],
-      };
-    }
-
-    // ── Check 1: Root package.json for cors dependency ──
-    const deps = { ...packageJson?.dependencies, ...packageJson?.devDependencies } || {};
-    if (deps.cors) {
-      return {
-        checkId,
-        status: 'pass',
-        confidence: 'high',
-        message: 'CORS dependency found',
-        findings: [],
-      };
-    }
-
-    // ── Check 2: Monorepo sub-packages for cors dependency ──
-    const isMonorepo = !!packageJson?.workspaces;
-    if (isMonorepo) {
-      const subPkgPaths = tree
-        .filter(p => /^(packages|apps)\/[^/]+\/package\.json$/.test(p))
-        .slice(0, 5);
-
-      for (const pkgPath of subPkgPaths) {
-        const pkgContent = await files.get(pkgPath);
-        if (!pkgContent) continue;
-        try {
-          const subPkg = JSON.parse(pkgContent);
-          const subDeps = { ...subPkg?.dependencies, ...subPkg?.devDependencies } || {};
-          if (subDeps.cors) {
-            return {
-              checkId,
-              status: 'pass',
-              confidence: 'high',
-              message: `CORS dependency found in ${pkgPath}`,
-              findings: [{ file: pkgPath, issue: 'cors dependency detected' }],
-            };
-          }
-        } catch { /* skip invalid JSON */ }
-      }
-    }
-
-    // ── Check 3: Scan code + config files for CORS patterns ──
-    // Priority: config files first (frameworks often configure CORS there),
-    // then server/app/index files, then API route files
-    const candidateFiles = tree
-      .filter(p => {
-        if (!/\.(js|ts|mjs|cjs)$/.test(p)) return false;
-        if (/(test|spec|example|__tests__|node_modules|dist|build)/.test(p)) return false;
-        return CONFIG_FILE_PATTERNS.test(p) ||
-               /(server|app|index)/.test(p) ||
-               API_ROUTE_PATTERNS.test(p);
-      })
-      .sort((a, b) => {
-        // Config files first
-        const aConfig = CONFIG_FILE_PATTERNS.test(a) ? 0 : 1;
-        const bConfig = CONFIG_FILE_PATTERNS.test(b) ? 0 : 1;
-        if (aConfig !== bConfig) return aConfig - bConfig;
-        // Then server/app/index files
-        const aServer = /(server|app|index)/.test(a) ? 0 : 1;
-        const bServer = /(server|app|index)/.test(b) ? 0 : 1;
-        if (aServer !== bServer) return aServer - bServer;
-        return 0;
-      })
-      .slice(0, 7);
-
-    for (const filePath of candidateFiles) {
-      const content = await files.get(filePath);
-      if (!content) continue;
-      for (const pattern of CORS_PATTERNS) {
-        if (pattern.test(content)) {
-          return {
-            checkId,
-            status: 'pass',
-            confidence: 'high',
-            message: `CORS config found in ${filePath}`,
-            findings: [{ file: filePath, issue: 'CORS detected' }],
-          };
-        }
-      }
-    }
-
-    // ── Check 4: Static site heuristic ──
-    // Only for deployables that have source files but no API routes or server files
-    const hasSourceFiles = tree.some(p => /\.(js|ts|jsx|tsx|astro|vue|svelte)$/.test(p));
-    const hasApiRoutes = tree.some(p => API_ROUTE_PATTERNS.test(p) && /\.(js|ts)$/.test(p));
-    const hasServerFiles = tree.some(p => /(server|app|index)/.test(p) && /\.(js|ts)$/.test(p));
-    if (repoType === RepoType.DEPLOYABLE && hasSourceFiles && !hasApiRoutes && !hasServerFiles) {
-      return {
-        checkId,
-        status: 'not-applicable',
-        confidence: 'medium',
-        message: 'No API routes detected — CORS likely not needed for static site',
-        findings: [],
-      };
-    }
-
-    return {
-      checkId,
-      status: 'check-it',
-      confidence: 'medium',
-      message: 'No CORS configuration found — may be needed for API endpoints',
-      findings: [],
+    const rootDeps = {
+      ...(packageJson?.dependencies || {}),
+      ...(packageJson?.devDependencies || {}),
+      ...(packageJson?.peerDependencies || {}),
     };
-  } catch (err) {
+    if (rootDeps.cors || rootDeps['@fastify/cors'] || rootDeps['@koa/cors'] || rootDeps['koa-cors']) {
+      return { checkId, status: 'pass', confidence: 'high', message: 'CORS dependency found in package.json', findings: [] };
+    }
+
+    const subPkgCors = await scanSubPackagesForCorsDep(tree, files);
+    if (subPkgCors) {
+      return { checkId, status: 'pass', confidence: 'high', message: `CORS dependency found in ${subPkgCors}`, findings: [{ file: subPkgCors, issue: 'cors dependency detected' }] };
+    }
+
+    const corsFile = await scanFilesForCors(tree, files);
+    if (corsFile) {
+      return { checkId, status: 'pass', confidence: 'high', message: `CORS configuration found in ${corsFile}`, findings: [{ file: corsFile, issue: 'CORS detected' }] };
+    }
+
+    if (isTutorial(packageJson)) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Tutorial or example repository — CORS not applicable', findings: [] };
+    }
+
+    if (isLibraryOrFramework(packageJson, tree)) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Library or framework source — CORS not applicable', findings: [] };
+    }
+
+    if (isStaticContentSite(packageJson, tree)) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Static or content site without API endpoints — CORS not needed', findings: [] };
+    }
+
+    if (!hasServerFootprint(tree, packageJson)) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'No server or API endpoints detected — CORS not needed', findings: [] };
+    }
+
+    if (isClearBackendApi(packageJson, tree)) {
+      return { checkId, status: 'fail', confidence: 'medium', message: 'Backend API service detected but no CORS configuration found', findings: [{ file: 'unknown', issue: 'Missing CORS configuration for API service' }] };
+    }
+
     return {
       checkId,
       status: 'check-it',
       confidence: 'low',
-      message: `Error: ${err.message}`,
-      findings: [],
+      message: 'Server/API endpoints detected but unable to determine if CORS is required',
+      findings: [{ file: 'unknown', issue: 'Server endpoints present; verify if cross-origin requests need CORS configuration' }],
     };
+  } catch (err) {
+    console.error(`[${checkId}] Unexpected error:`, err);
+    return { checkId, status: 'not-applicable', confidence: 'low', message: `Error during CORS check: ${err.message}`, findings: [{ file: 'unknown', issue: `Error: ${err.message}` }] };
   }
 }
