@@ -1,238 +1,253 @@
-// specialists/host-binding.js — Checks if server binds to 0.0.0.0 (all interfaces)
-// Required for Render.com, Railway, and most cloud platforms.
-// Binding only to localhost/127.0.0.1 makes the server unreachable externally.
-
 export const checkId = 'host-binding';
 export const name = 'Host Binding (0.0.0.0)';
 export const appliesTo = ['deployable', 'server', 'framework'];
 
-// ---- Patterns ----
+const SKIP_PATH = /(?:^|\/)node_modules\/|(?:^|\/)dist\/|(?:^|\/)build\/|(?:^|\/)coverage\/|(?:^|\/)test\/|(?:^|\/)tests\/|(?:^|\/)__tests__\/|(?:^|\/)fixtures\/|(?:^|\/)playground\/|\.d\.ts$|\.min\.js$/;
 
-// GOOD: explicit 0.0.0.0 binding
-const GOOD_PATTERNS = [
-  /['"]0\.0\.0\.0['"]/,
-  /host\s*[=:]\s*['"]0\.0\.0\.0['"]/i,
-];
-
-// BAD: explicit localhost binding
-const BAD_PATTERNS = [
-  /listen\s*\([^)]*['"]127\.0\.0\.1['"]/,
-  /listen\s*\([^)]*['"]localhost['"]/i,
-];
-
-// NEUTRAL: listen with a port arg only (no host) — Node.js defaults to :: (all interfaces) since v18+
-// Only matches numeric literals or process.env.PORT — NOT variable names like 'options' which could contain {host: 'localhost'}
-const NO_HOST_LISTEN = /\.listen\s*\(\s*(?:\d+|process\.env\.PORT\b[^,)]*|\{[^}]*\bport\s*:[^}]*\})(?:\s*,\s*[^)]*)?\s*\)/i;
-
-// ENV-VAR based host — could be anything, needs manual review
-const ENV_HOST_PATTERN = /process\.env\.(?:HOST|BIND_ADDRESS|SERVER_HOST)/i;
-
-// ---- Helpers ----
-
-/**
- * Check if a line is a comment (should be skipped)
- */
-function isCommentLine(line) {
-  const trimmed = line.trimStart();
-  return trimmed.startsWith('//') ||
-         trimmed.startsWith('*') ||
-         trimmed.startsWith('/*') ||
-         trimmed.startsWith('* ');
+function isRelevantPath(p) {
+  return !SKIP_PATH.test(p);
 }
 
-/**
- * Build the list of files to scan for binding patterns.
- * Prioritizes likely server entry points and de-prioritizes framework internals.
- */
-function selectFiles(tree) {
-  // Priority 1: Direct server/entry files with extensions
-  const priority1 = tree.filter(p =>
-    /\.(js|ts|mjs|cjs)$/.test(p) &&
-    !/(test|spec|__tests__|__mocks__|\.d\.ts|dist\/|build\/|\.min\.)/.test(p) &&
-    /^(bin\/|cli\/|src\/server|src\/app|src\/index|src\/main|src\/cli|server\.|app\.|index\.|main\.|start\.)/.test(p)
-  );
+function isBuildToolOrNonServerFramework(packageJson, tree) {
+  if (!packageJson) return false;
+  const name = (packageJson.name || '').toLowerCase();
+  const keywords = (packageJson.keywords || []).map(k => k.toLowerCase());
+  const allText = [name, ...keywords].join(' ');
 
-  // Priority 2: CLI entry points (may lack .js extension, have shebang)
-  const priority2 = tree.filter(p =>
-    /^bin\//.test(p) &&
-    !/(test|spec|__tests__)/.test(p) &&
-    !priority1.includes(p)
-  );
-
-  // Priority 3: Other files with listen-related names
-  const priority3 = tree.filter(p =>
-    /\.(js|ts|mjs|cjs)$/.test(p) &&
-    !/(test|spec|__tests__|__mocks__|\.d\.ts|dist\/|build\/|\.min\.)/.test(p) &&
-    /(server|app|index|main|listen|serve)/.test(p) &&
-    !priority1.includes(p) &&
-    !priority2.includes(p)
-  );
-
-  // Priority 4: Root-level JS files (often entry points)
-  const priority4 = tree.filter(p =>
-    /^[^/]+\.(js|ts|mjs|cjs)$/.test(p) &&
-    !/(test|spec|__tests__|__mocks__|\.d\.ts)/.test(p) &&
-    !priority1.includes(p) &&
-    !priority2.includes(p) &&
-    !priority3.includes(p)
-  );
-
-  // Combine — exclude known framework-internal files when user-facing files exist
-  // Framework internals (lib/application.js, lib/server.js) are method implementations, not user binding code
-  const combined = [...priority1, ...priority2, ...priority3, ...priority4];
-
-  const isFrameworkInternal = (p) =>
-    /^lib\/application\./.test(p) ||       // Express: app.listen() method definition
-    /^lib\/server\./.test(p);              // Fastify: server.listen() delegation
-
-  const userFiles = combined.filter(p => !isFrameworkInternal(p));
-
-  // If we have user-facing files, scan only those. Otherwise scan everything we found.
-  return (userFiles.length > 0 ? userFiles : combined).slice(0, 8);
-}
-
-/**
- * Check framework-specific deployment configs and scripts for host binding patterns.
- * Frameworks like Next.js, Nuxt, Astro handle binding internally — no raw listen() calls.
- */
-async function checkFrameworkDeployment(tree, files, packageJson) {
-  const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
-  const scripts = packageJson?.scripts || {};
-  const allScriptText = Object.values(scripts).join(' ');
-
-  const findings = [];
-
-  // ---- 1. Script flags: -H 0.0.0.0, --host 0.0.0.0, --hostname 0.0.0.0 ----
-  const FLAG_GOOD = /\s(?:-H|--host|--hostname)\s+['"]0\.0\.0\.0['"]/;
-  const FLAG_BAD = /\s(?:-H|--host|--hostname)\s+['"](?:localhost|127\.0\.0\.1)['"]/;
-
-  if (FLAG_GOOD.test(allScriptText)) {
-    return { type: 'good', message: 'Framework start script binds to 0.0.0.0', findings: [{ file: 'package.json', line: 0, issue: 'Script flags host as 0.0.0.0' }] };
-  }
-  if (FLAG_BAD.test(allScriptText)) {
-    return { type: 'bad', message: 'Framework start script binds to localhost', findings: [{ file: 'package.json', line: 0, issue: 'Script flags host as localhost' }] };
-  }
-
-  // ---- 2. Config file patterns ----
-  const CONFIG_FILES = [
-    { name: 'next.config', pattern: /next\.config\.(js|mjs|ts)/ },
-    { name: 'nuxt.config', pattern: /nuxt\.config\.(ts|js)/ },
-    { name: 'astro.config', pattern: /astro\.config\.(mjs|js|ts)/ },
-    { name: 'vite.config', pattern: /vite\.config\.(js|ts|mjs)/ },
-    { name: 'svelte.config', pattern: /svelte\.config\.(js|ts)/ },
-    { name: 'remix.config', pattern: /remix\.config\.(js|ts)/ },
+  const buildIndicators = [
+    'webpack', 'rollup', 'babel', 'turborepo', 'turbo', 'lerna', 'nx',
+    'esbuild', 'parcel', 'bundler', 'compiler', 'transpiler',
+    'build-tool', 'build-system', 'monorepo-tool', 'task-runner'
   ];
+  if (buildIndicators.some(i => allText.includes(i))) return true;
 
-  for (const { name, pattern } of CONFIG_FILES) {
-    const configPath = tree.find(p => pattern.test(p));
-    if (!configPath) continue;
-    const content = await files.get(configPath);
-    if (!content) continue;
+  const deps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
+  const hasServerDep = [
+    'express', 'fastify', 'koa', 'hono', '@hono/node-server', 'http-server',
+    'polka', 'restify', 'micro', 'connect', 'next', 'nuxt', 'astro', 'remix',
+    'h3', 'nitropack', 'listhen'
+  ].some(d => deps[d]);
 
-    // GOOD: host: '0.0.0.0' in config
-    if (/host\s*:\s*['"]0\.0\.0\.0['"]/.test(content)) {
-      return { type: 'good', message: `${name} explicitly sets host to 0.0.0.0`, findings: [{ file: configPath, line: 0, issue: 'Config binds to 0.0.0.0' }] };
-    }
-    // BAD: host: 'localhost' in config
-    if (/host\s*:\s*['"](?:localhost|127\.0\.0\.1)['"]/.test(content)) {
-      return { type: 'bad', message: `${name} sets host to localhost`, findings: [{ file: configPath, line: 0, issue: 'Config binds to localhost' }] };
-    }
-  }
-
-  // ---- 3. Known frameworks with safe production defaults ----
-  // These frameworks default to 0.0.0.0 in production (no explicit listen needed)
-  const safeFrameworks = {
-    next: 'Next.js',
-    nuxt: 'Nuxt',
-    astro: 'Astro',
-    '@sveltejs/kit': 'SvelteKit',
-    hono: 'Hono',
-    remix: 'Remix',
-  };
-  for (const [pkg, label] of Object.entries(safeFrameworks)) {
-    if (deps[pkg]) {
-      return { type: 'good', message: `${label} handles host binding internally (defaults to 0.0.0.0 in production)`, findings: [{ file: 'package.json', line: 0, issue: `${label} framework with internal host binding` }] };
+  if (!hasServerDep && packageJson.bin) {
+    const hasServerFile = tree.some(p =>
+      isRelevantPath(p) &&
+      /(?:^|\/)server\.|(?:^|\/)app\.|(?:^|\/)listen\./.test(p)
+    );
+    if (!hasServerFile) {
+      const toolIndicators = ['cli', 'build', 'bundle', 'dev', 'tool', 'plugin', 'loader'];
+      if (toolIndicators.some(i => allText.includes(i))) return true;
     }
   }
 
-  // ---- 4. Vite as dev server (not production) ----
-  if (deps.vite && !deps.next && !deps.nuxt && !deps.astro) {
-    // Vite alone is a dev tool; production hosting is via adapter
-    return { type: 'check-it', message: 'Vite dev server — verify production host binding in deployment config', findings: [] };
+  const keywordsOnly = packageJson.keywords || [];
+  if (
+    keywordsOnly.some(k => /^(?:library|component|ui|client|browser)$/.test(k)) &&
+    !hasServerDep
+  ) {
+    return true;
   }
-
-  return null; // No framework pattern detected
-}
-
-/**
- * Detect if the repo is a pure library with no server capability.
- * Used to return not-applicable more accurately.
- */
-function isPureLibrary(repoType, tree, packageJson) {
-  // Definitively server-related repo types should NEVER be short-circuited.
-  // The classifier correctly identifies servers and frameworks — these always need host binding checks.
-  if (repoType === 'server' || repoType === 'framework') return false;
-  if (repoType === 'library' || repoType === 'empty') return true;
-
-  // For 'deployable', 'tool', 'unknown': check if it's actually a library in disguise.
-  // The classifier often mislabels libraries (React) and simple websites as 'deployable'.
-
-  // Check for server-related dependencies
-  const deps = packageJson?.dependencies || {};
-  const devDeps = packageJson?.devDependencies || {};
-  const allDeps = { ...deps, ...devDeps };
-  const serverDeps = ['express', 'fastify', 'koa', 'hono', '@hono/node-server', 'http-server',
-    'polka', 'restify', 'micro', 'connect']; // NOTE: vite/webpack-dev-server are dev tools, not prod servers
-  const hasServerDep = serverDeps.some(d => allDeps[d]);
-
-  // Check for framework dependencies — these handle server binding internally
-  const frameworkDeps = ['next', 'nuxt', 'astro', '@sveltejs/kit', 'remix', 'hono'];
-  const hasFrameworkDep = frameworkDeps.some(d => allDeps[d]);
-  // Frameworks are NEVER libraries — they are deployable applications
-  if (hasFrameworkDep) return false;
-
-  // Check for actual server entry-point files (not SSR packages or generic index.js deep in packages/)
-  const hasServerFile = tree.some(p => {
-    if (!/\.(js|ts|mjs|cjs)$/.test(p)) return false;
-    if (/(test|spec|__tests__)/.test(p)) return false;
-    // Exclude known false positives: React SSR packages, server-side rendering code
-    if (/react-server|react-dom\/server|server-side|ssr/.test(p)) return false;
-    const name = p.split('/').pop();
-    const depth = p.split('/').length;
-    // Actual server entry points
-    return /^(server|app|listen|start)\.\w+$/.test(name) ||  // server.js, app.js
-           (/^(index|main)\.\w+$/.test(name) && depth === 1) || // index.js ONLY at root
-           /^bin\//.test(p) ||                                  // bin/ entry points
-           /^src\/(server|app)\//.test(p);                      // src/server/, src/app/
-  });
-
-  // CLI tools without server deps are not deployable servers
-  const toolIndicators = ['nodemon', 'cypress', 'playwright', 'jest', 'mocha', 'ava',
-    'eslint', 'prettier', 'webpack', 'rollup', 'parcel', 'babel', 'typescript'];
-  const isLikelyTool = repoType === 'tool' ||
-    toolIndicators.some(t => packageJson?.name?.includes(t));
-
-  // Keyword-based detection: packages with "library", "component", "ui" keywords and peerDeps are libraries
-  const keywords = packageJson?.keywords || [];
-  const hasLibraryKeywords = keywords.some(k => /library|component|ui|react|vue|angular|client/.test(k));
-  if (hasLibraryKeywords && !hasServerDep) return true;
-
-  // If no server deps and no server files, it's effectively a library
-  if (!hasServerDep && !hasServerFile) return true;
-  // CLI tools without server deps are not deployable servers
-  if (isLikelyTool && !hasServerDep) return true;
 
   return false;
 }
 
-// ---- Main Check ----
+function hasServerSignals(tree, packageJson) {
+  const infraBase = new Set([
+    'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'fly.toml',
+    'railway.toml', 'render.yaml', 'Procfile', 'wrangler.toml', 'netlify.toml',
+    'vercel.json'
+  ]);
+  const hasInfra = tree.some(p => {
+    if (!isRelevantPath(p)) return false;
+    const base = p.split('/').pop();
+    return infraBase.has(base) || infraBase.has(p);
+  });
+  if (hasInfra) return true;
+
+  const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
+
+  const frameworkOrServerDeps = new Set([
+    'next', 'nuxt', 'astro', 'remix', 'hono', 'h3', 'nitropack', 'listhen',
+    'express', 'fastify', 'koa', '@hono/node-server', 'http-server',
+    'polka', 'restify', 'micro', 'connect'
+  ]);
+  if (Object.keys(deps).some(d => frameworkOrServerDeps.has(d))) return true;
+
+  const scripts = Object.values(packageJson?.scripts || {}).join(' ');
+  if (
+    /\b(?:next|nuxt|astro|remix|wrangler|serve|start:prod|start:production|dev:host)\b/.test(scripts) ||
+    /(?:-H|--host|--hostname)\b/.test(scripts) ||
+    /\b(?:HOST|BIND_ADDRESS|SERVER_HOST)\s*=/.test(scripts)
+  ) return true;
+
+  const configPatterns = [
+    /(?:^|\/)next\.config\./,
+    /(?:^|\/)nuxt\.config\./,
+    /(?:^|\/)astro\.config\./,
+    /(?:^|\/)remix\.config\./,
+    /(?:^|\/)svelte\.config\./,
+    /(?:^|\/)nitro\.config\./,
+    /(?:^|\/)wrangler\.toml/,
+    /(?:^|\/)fly\.toml/,
+    /(?:^|\/)railway\.toml/,
+    /(?:^|\/)render\.yaml/,
+    /(?:^|\/)netlify\.toml/,
+    /(?:^|\/)vercel\.json/,
+  ];
+  if (tree.some(p => isRelevantPath(p) && configPatterns.some(rx => rx.test(p)))) return true;
+
+  const hasServerFile = tree.some(p => {
+    if (!isRelevantPath(p) || !/\.(js|ts|mjs|cjs)$/.test(p)) return false;
+    if (/(test|spec|__tests__)/.test(p)) return false;
+    const name = p.split('/').pop();
+    const depth = p.split('/').length;
+    return /^(server|app|listen|start|main|entry|bootstrap)\.\w+$/.test(name) ||
+           (/^(index)\.\w+$/.test(name) && depth === 1) ||
+           /^bin\/(www|server|start|listen|app)\b/.test(p) ||
+           /(?:^|\/)src\/(?:server|app|listen|start|main)\.\w+$/.test(p) ||
+           /(?:^|\/)apps?\/.+\/(?:server|app|listen|start|main|entry|bootstrap)\.\w+$/.test(p);
+  });
+  if (hasServerFile) return true;
+
+  if (tree.some(p => /(?:^|\/)Dockerfile(?:\.\w+)?$/.test(p) || /(?:^|\/)docker-compose/.test(p))) return true;
+
+  return false;
+}
+
+function selectFiles(tree) {
+  const codeExt = /\.(?:js|ts|mjs|cjs)$/;
+  const candidates = [];
+
+  function add(p, pri) {
+    if (!isRelevantPath(p)) return;
+    if (candidates.some(c => c.path === p)) return;
+    candidates.push({ path: p, priority: pri });
+  }
+
+  tree.forEach(p => {
+    if (/^(?:docker-compose|Dockerfile)/.test(p) || /\.dockerfile$/i.test(p) ||
+        /fly\.toml$|railway\.toml$|render\.yaml$|wrangler\.toml$|netlify\.toml$|vercel\.json$/.test(p) ||
+        /^\.env(?!\.example|\.test)/.test(p)) {
+      add(p, 1);
+    }
+  });
+
+  tree.forEach(p => {
+    if (/(?:^|\/)next\.config\.|(?:^|\/)nuxt\.config\.|(?:^|\/)astro\.config\.|(?:^|\/)remix\.config\.|(?:^|\/)svelte\.config\.|(?:^|\/)vite\.config\.|(?:^|\/)nitro\.config\./.test(p)) {
+      add(p, 2);
+    }
+  });
+
+  tree.forEach(p => {
+    if (/^[^/]+\.(?:js|ts|mjs|cjs)$/.test(p) && /^(?:server|app|index|main|listen|start|entry|bootstrap)\./.test(p)) {
+      add(p, 3);
+    }
+  });
+
+  tree.forEach(p => {
+    if (!codeExt.test(p)) return;
+    const name = p.split('/').pop();
+    if (/^(?:server|app|listen|start|main|index|entry|bootstrap)\./.test(name)) {
+      add(p, 4);
+    } else if (/(?:^|\/)src\/(?:server|app|index|main|listen|start)\./.test(p)) {
+      add(p, 4);
+    } else if (/(?:^|\/)bin\//.test(p)) {
+      add(p, 4);
+    }
+  });
+
+  tree.forEach(p => {
+    if (!codeExt.test(p)) return;
+    if (/(?:^|\/)apps?\/.+\/(?:server|app|listen|start|main|index|entry|bootstrap)\./.test(p)) {
+      add(p, 5);
+    } else if (/(?:^|\/)packages?\/.+\/(?:server|app|listen|start|main|index|entry|bootstrap)\./.test(p)) {
+      add(p, 6);
+    }
+  });
+
+  tree.forEach(p => {
+    if (!codeExt.test(p)) return;
+    const name = p.split('/').pop();
+    if (/(?:server|app|listen|start|main|index|entry|bootstrap|application|express|fastify)/.test(name)) {
+      add(p, 7);
+    }
+  });
+
+  tree.forEach(p => {
+    if (/^[^/]+\.(?:js|ts|mjs|cjs)$/.test(p)) {
+      add(p, 8);
+    }
+  });
+
+  tree.forEach(p => {
+    if (!codeExt.test(p)) return;
+    if (/(?:^|\/)examples\/|(?:^|\/)playground\/|(?:^|\/)docs\//.test(p)) {
+      add(p, 9);
+    }
+  });
+
+  candidates.sort((a, b) => a.priority - b.priority);
+  return candidates.slice(0, 20).map(c => c.path);
+}
+
+function isCommentLine(line) {
+  const t = line.trimStart();
+  return t.startsWith('//') || t.startsWith('/*') || t.startsWith('*') || t.startsWith('* ');
+}
+
+function checkFrameworkDefaults(tree, packageJson) {
+  const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
+  const findings = [];
+
+  const safeDepLabels = {
+    next: 'Next.js',
+    nuxt: 'Nuxt',
+    astro: 'Astro',
+    hono: 'Hono',
+    remix: 'Remix',
+    h3: 'H3',
+    nitropack: 'Nitro',
+  };
+  for (const [pkg, label] of Object.entries(safeDepLabels)) {
+    if (deps[pkg]) {
+      findings.push({ file: 'package.json', line: 0, issue: `${label} framework detected` });
+      return { confidence: 'medium', message: `${label} handles host binding internally (defaults to 0.0.0.0 in production)`, findings };
+    }
+  }
+
+  const configMappings = [
+    { rx: /(?:^|\/)next\.config\./, label: 'Next.js' },
+    { rx: /(?:^|\/)nuxt\.config\./, label: 'Nuxt' },
+    { rx: /(?:^|\/)astro\.config\./, label: 'Astro' },
+    { rx: /(?:^|\/)svelte\.config\./, label: 'SvelteKit' },
+    { rx: /(?:^|\/)remix\.config\./, label: 'Remix' },
+    { rx: /(?:^|\/)nitro\.config\./, label: 'Nitro' },
+  ];
+  for (const { rx, label } of configMappings) {
+    const path = tree.find(p => isRelevantPath(p) && rx.test(p));
+    if (path) {
+      findings.push({ file: path, line: 0, issue: `${label} config detected` });
+      return { confidence: 'medium', message: `${label} handles host binding internally (defaults to 0.0.0.0 in production)`, findings };
+    }
+  }
+
+  return null;
+}
 
 export async function check(context) {
-  const { tree, files, packageJson, repoType } = context;
+  const { tree, files, packageJson } = context;
 
   try {
-    // Skip pure libraries
-    if (isPureLibrary(repoType, tree, packageJson)) {
+    if (isBuildToolOrNonServerFramework(packageJson, tree)) {
+      return {
+        checkId,
+        status: 'not-applicable',
+        confidence: 'high',
+        message: 'Build tool / compiler detected — host binding not applicable',
+        findings: [],
+      };
+    }
+
+    if (!hasServerSignals(tree, packageJson)) {
       return {
         checkId,
         status: 'not-applicable',
@@ -246,16 +261,33 @@ export async function check(context) {
 
     let foundGood = false;
     let foundBad = false;
-    let foundNoHost = false;
     let foundEnvHost = false;
+    let foundNoHost = false;
     const findings = [];
-    const seenFindings = new Set(); // deduplication
+    const seen = new Set();
 
     function addFinding(file, line, issue) {
       const key = `${file}:${line}:${issue}`;
-      if (seenFindings.has(key)) return;
-      seenFindings.add(key);
+      if (seen.has(key)) return;
+      seen.add(key);
       findings.push({ file, line, issue });
+    }
+
+    const scripts = packageJson?.scripts || {};
+    for (const [scriptName, cmd] of Object.entries(scripts)) {
+      if (/(?:-H|--host|--hostname)\s+['"]?0\.0\.0\.0['"]?\b/.test(cmd)) {
+        foundGood = true;
+        addFinding('package.json', 0, `Script "${scriptName}" flags host as 0.0.0.0`);
+      } else if (/(?:-H|--host|--hostname)\s+['"]?(?:localhost|127\.0\.0\.1)['"]?\b/.test(cmd)) {
+        foundBad = true;
+        addFinding('package.json', 0, `Script "${scriptName}" flags host as localhost`);
+      } else if (/\bHOST\s*=\s*['"]?0\.0\.0\.0['"]?\b/.test(cmd) || /\bBIND_ADDRESS\s*=\s*['"]?0\.0\.0\.0['"]?\b/.test(cmd)) {
+        foundGood = true;
+        addFinding('package.json', 0, `Script "${scriptName}" sets HOST to 0.0.0.0`);
+      } else if (/\bHOST\s*=\s*['"]?(?:localhost|127\.0\.0\.1)['"]?\b/.test(cmd)) {
+        foundBad = true;
+        addFinding('package.json', 0, `Script "${scriptName}" sets HOST to localhost`);
+      }
     }
 
     for (const filePath of filesToScan) {
@@ -263,68 +295,94 @@ export async function check(context) {
       if (!content) continue;
       const lines = content.split('\n');
 
+      const isDocker = filePath === 'Dockerfile' || filePath.startsWith('docker-compose') || /\.dockerfile$/i.test(filePath);
+      const isEnv = /^\.env/.test(filePath) && !/\.env\.example$/.test(filePath) && !/\.env\.test$/.test(filePath);
+      const isConfig = /\.config\.|\.toml$|\.yaml$|\.yml$|\.json$/.test(filePath);
+
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-
-        // Skip comments and JSDoc
         if (isCommentLine(line)) continue;
 
-        // Skip lines that don't have listen or createServer
-        if (!/\.listen\s*\(/.test(line) && !/createServer.*\.listen/.test(line)) continue;
+        if (isDocker) {
+          if (/CMD|ENTRYPOINT|ENV/i.test(line)) {
+            if (/['"]0\.0\.0\.0['"]/.test(line) || /\bHOST\s*=\s*0\.0\.0\.0\b/.test(line)) {
+              foundGood = true;
+              addFinding(filePath, i + 1, 'Docker config binds to 0.0.0.0');
+            } else if (/['"]localhost['"]|['"]127\.0\.0\.1['"]/.test(line) || /\bHOST\s*=\s*localhost\b/.test(line)) {
+              foundBad = true;
+              addFinding(filePath, i + 1, 'Docker config binds to localhost');
+            }
+          }
+          continue;
+        }
 
-        // Check GOOD patterns
-        for (const pattern of GOOD_PATTERNS) {
-          if (pattern.test(line)) {
+        if (isEnv) {
+          if (/^(?:HOST|BIND_ADDRESS)\s*=\s*0\.0\.0\.0/.test(line)) {
             foundGood = true;
-            addFinding(filePath, i + 1, 'Binds to 0.0.0.0');
-          }
-        }
-
-        // Check BAD patterns
-        for (const pattern of BAD_PATTERNS) {
-          if (pattern.test(line)) {
+            addFinding(filePath, i + 1, 'Env file sets host to 0.0.0.0');
+          } else if (/^(?:HOST|BIND_ADDRESS)\s*=\s*localhost/.test(line)) {
             foundBad = true;
-            addFinding(filePath, i + 1, 'Binds to localhost only');
+            addFinding(filePath, i + 1, 'Env file sets HOST to localhost');
           }
+          continue;
         }
 
-        // Check env-var based host
-        if (ENV_HOST_PATTERN.test(line)) {
+        if (isConfig) {
+          if (/["']?host["']?\s*[:=]\s*['"]0\.0\.0\.0['"]/i.test(line)) {
+            foundGood = true;
+            addFinding(filePath, i + 1, 'Config sets host to 0.0.0.0');
+          } else if (/["']?host["']?\s*[:=]\s*['"](?:localhost|127\.0\.0\.1)['"]/i.test(line)) {
+            foundBad = true;
+            addFinding(filePath, i + 1, 'Config sets host to localhost');
+          }
+          if (/\bHOST\s*:\s*0\.0\.0\.0/.test(line) || /-\s*HOST\s*=\s*0\.0\.0\.0/.test(line)) {
+            foundGood = true;
+            addFinding(filePath, i + 1, 'Config sets HOST to 0.0.0.0');
+          } else if (/\bHOST\s*:\s*(?:localhost|127\.0\.0\.1)/.test(line) || /-\s*HOST\s*=\s*(?:localhost|127\.0\.0\.1)/.test(line)) {
+            foundBad = true;
+            addFinding(filePath, i + 1, 'Config sets HOST to localhost');
+          }
+          continue;
+        }
+
+        const hasListen = /\.listen\s*\(/.test(line);
+        const hasBunServe = /Bun\.serve\s*\(/.test(line);
+        const hasDenoServe = /Deno\.(?:serve|listen)\s*\(/.test(line);
+        const hasCreateServer = /createServer\s*\(/.test(line);
+
+        if (!hasListen && !hasBunServe && !hasDenoServe && !hasCreateServer) continue;
+
+        const hasGoodLiteral = /['"]0\.0\.0\.0['"]|['"]::['"]/.test(line);
+        const hasBadLiteral = /['"]127\.0\.0\.1['"]|['"]localhost['"]/i.test(line);
+        const hasEnvHost = /process\.env\.(?:HOST|BIND_ADDRESS|SERVER_HOST)/.test(line);
+        const hasHostKey = /\b(?:host|hostname)\s*:/.test(line);
+
+        if (hasGoodLiteral) {
+          foundGood = true;
+          addFinding(filePath, i + 1, 'Explicitly binds to 0.0.0.0');
+          continue;
+        }
+        if (hasBadLiteral) {
+          foundBad = true;
+          addFinding(filePath, i + 1, 'Explicitly binds to localhost');
+          continue;
+        }
+        if (hasEnvHost) {
           foundEnvHost = true;
           addFinding(filePath, i + 1, 'Host determined by environment variable');
+          continue;
+        }
+        if (hasHostKey) {
+          foundEnvHost = true;
+          addFinding(filePath, i + 1, 'Host set via configuration object (value unclear)');
+          continue;
         }
 
-        // Check no-host listen (e.g., app.listen(3000))
-        // Only count if no good/bad/env pattern already matched on this line
-        if (!foundGood && !foundBad && !foundEnvHost && NO_HOST_LISTEN.test(line)) {
-          // Make sure this isn't already covered by another pattern
-          const alreadyMatched = GOOD_PATTERNS.some(p => p.test(line)) ||
-                                 BAD_PATTERNS.some(p => p.test(line)) ||
-                                 ENV_HOST_PATTERN.test(line) ||
-                                 /host\s*:/i.test(line); // object with host property
-          if (!alreadyMatched) {
-            foundNoHost = true;
-            addFinding(filePath, i + 1, 'Listens on port without explicit host (defaults to all interfaces)');
-          }
+        if (hasListen || hasBunServe || hasDenoServe) {
+          foundNoHost = true;
+          addFinding(filePath, i + 1, 'Listens without explicit host (defaults to all interfaces)');
         }
       }
-    }
-
-    // Check if the repo has any server-related dependencies
-    const allDeps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
-    const serverDeps = ['express', 'fastify', 'koa', 'hono', '@hono/node-server', 'http-server',
-      'polka', 'restify', 'micro', 'connect'];
-    const hasServerDep = serverDeps.some(d => allDeps[d]);
-
-    // Determine result
-    if (foundGood) {
-      return {
-        checkId,
-        status: 'pass',
-        confidence: 'high',
-        message: 'Server binds to 0.0.0.0 (all network interfaces)',
-        findings,
-      };
     }
 
     if (foundBad) {
@@ -337,12 +395,22 @@ export async function check(context) {
       };
     }
 
+    if (foundGood) {
+      return {
+        checkId,
+        status: 'pass',
+        confidence: 'high',
+        message: 'Server binds to 0.0.0.0 (all network interfaces)',
+        findings,
+      };
+    }
+
     if (foundEnvHost) {
       return {
         checkId,
         status: 'check-it',
         confidence: 'medium',
-        message: 'Host binding controlled by environment variable — verify it is set to 0.0.0.0 in production',
+        message: 'Host binding controlled by environment variable or config — verify it is set to 0.0.0.0 in production',
         findings,
       };
     }
@@ -352,38 +420,78 @@ export async function check(context) {
         checkId,
         status: 'pass',
         confidence: 'medium',
-        message: 'Server listens without explicit host (Node.js defaults to all interfaces since v18+)',
+        message: 'Server listens without explicit host (Node.js/Bun/Deno defaults to all interfaces)',
         findings,
       };
     }
 
-    // ---- FRAMEWORK-SPECIFIC DEPLOYMENT CHECK ----
-    // Next.js, Nuxt, Astro, SvelteKit, etc. handle binding internally.
-    // Check config files and scripts before giving up.
-    const fwResult = await checkFrameworkDeployment(tree, files, packageJson);
+    const fwResult = checkFrameworkDefaults(tree, packageJson);
     if (fwResult) {
-      if (fwResult.type === 'good') {
-        return { checkId, status: 'pass', confidence: 'medium', message: fwResult.message, findings: fwResult.findings };
-      }
-      if (fwResult.type === 'bad') {
-        return { checkId, status: 'fail', confidence: 'high', message: fwResult.message, findings: fwResult.findings };
-      }
-      if (fwResult.type === 'check-it') {
-        return { checkId, status: 'check-it', confidence: 'medium', message: fwResult.message, findings: fwResult.findings };
-      }
-    }
-
-    // POST-SCAN FALLBACK: If we scanned files but found NO listen() calls at all,
-    // and the repo has no server dependencies, it's not a server — host binding doesn't apply.
-    // This catches libraries misclassified as 'deployable' (e.g., React) where isPureLibrary() fails.
-    // Server and framework repos are excluded — they ARE server-related even if binding isn't visible.
-    if (repoType !== 'server' && repoType !== 'framework' && !hasServerDep && findings.length === 0) {
       return {
         checkId,
-        status: 'not-applicable',
-        confidence: 'high',
-        message: 'No server detected — host binding not applicable',
-        findings: [],
+        status: 'pass',
+        confidence: fwResult.confidence,
+        message: fwResult.message,
+        findings: fwResult.findings,
+      };
+    }
+
+    if (tree.some(p => isRelevantPath(p) && /(?:^|\/)wrangler\.toml/.test(p))) {
+      return {
+        checkId,
+        status: 'pass',
+        confidence: 'medium',
+        message: 'Cloudflare Workers deployment detected — host binding handled by platform',
+        findings: [{ file: 'wrangler.toml', line: 0, issue: 'Platform-managed host binding' }],
+      };
+    }
+
+    if (tree.some(p => isRelevantPath(p) && /(?:^|\/)netlify\.toml/.test(p))) {
+      return {
+        checkId,
+        status: 'pass',
+        confidence: 'medium',
+        message: 'Netlify deployment detected — host binding handled by platform',
+        findings: [{ file: 'netlify.toml', line: 0, issue: 'Platform-managed host binding' }],
+      };
+    }
+
+    if (tree.some(p => isRelevantPath(p) && /(?:^|\/)vercel\.json/.test(p))) {
+      return {
+        checkId,
+        status: 'pass',
+        confidence: 'medium',
+        message: 'Vercel deployment detected — host binding handled by platform',
+        findings: [{ file: 'vercel.json', line: 0, issue: 'Platform-managed host binding' }],
+      };
+    }
+
+    const hasInfra = tree.some(p =>
+      isRelevantPath(p) &&
+      (/(?:^|\/)Dockerfile(?:\.\w+)?$/.test(p) || /(?:^|\/)docker-compose/.test(p) || /fly\.toml$|railway\.toml$|render\.yaml$/.test(p))
+    );
+    if (hasInfra) {
+      return {
+        checkId,
+        status: 'pass',
+        confidence: 'medium',
+        message: 'Containerized/cloud deployment detected — no localhost binding found',
+        findings: [{ file: 'Dockerfile', line: 0, issue: 'Infrastructure present; no localhost restriction detected' }],
+      };
+    }
+
+    const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
+    const rawServerDeps = new Set([
+      'express', 'fastify', 'koa', 'hono', '@hono/node-server', 'http-server',
+      'polka', 'restify', 'micro', 'connect', 'h3', 'nitropack', 'listhen'
+    ]);
+    if (Object.keys(deps).some(d => rawServerDeps.has(d))) {
+      return {
+        checkId,
+        status: 'pass',
+        confidence: 'medium',
+        message: 'Server runtime detected without explicit localhost binding — defaults to all interfaces',
+        findings: [{ file: 'package.json', line: 0, issue: 'Server dependency present; no localhost restriction found' }],
       };
     }
 
@@ -392,10 +500,10 @@ export async function check(context) {
       status: 'check-it',
       confidence: 'medium',
       message: 'Could not determine host binding from scanned files',
-      findings: [],
+      findings: [{ file: 'package.json', line: 0, issue: 'Server signals detected but host binding could not be verified from available files' }],
     };
-
   } catch (err) {
+    console.error('host-binding check error:', err);
     return {
       checkId,
       status: 'check-it',
