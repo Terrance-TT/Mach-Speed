@@ -9,7 +9,7 @@
  *   kind: 'control' — a provably-correct mini-repo; every listed check MUST
  *                     stay inside its allowed status set (pass | not-applicable).
  *
- * Fixture content was crafted against the ACTUAL detection logic of the 12
+ * Fixture content was crafted against the ACTUAL detection logic of the 17
  * specialists in ms-work/specialists (read line-by-line), not assumed logic.
  * See REPORT.md for the per-fixture rationale and the specialist quirks found.
  *
@@ -639,6 +639,179 @@ module.exports = {
 };
 
 /* --------------------------------------------------------------------------
+ * NEW SPECIALISTS — wave-1-style mutants for the five checks added after the
+ * original dozen (ai-api-config, auth-config, object-storage, payment-config,
+ * platform-lock-in). One unambiguous injected fault each: these prove the new
+ * specialist FIRES at all on its core fault. Adversarial variants come later.
+ * ------------------------------------------------------------------------ */
+
+// -- ai-api-config: openai dep + a LIVE AI key hardcoded in a frontend component --
+const M_AI_API_EXPOSED = {
+  slug: 'mach-speed-exam/mutant-ai-api-config-exposed-key',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable with an openai dependency whose browser widget instantiates new OpenAI({ apiKey: 'sk-proj-...' }) in src/components/Chat.jsx — a live AI key hardcoded in frontend code. ai-api-config must flag it.",
+  files: (() => {
+    const deps = { ...STD_DEPS, openai: '^4.52.7' };
+    const files = healthyDeployableFiles({ name: 'acme-shop-api', deps, serverJs: SERVER_HEALTHY });
+    files['src/components/Chat.jsx'] = `import { useState } from 'react';
+import OpenAI from 'openai';
+
+// Support-chat widget — calls the model directly from the browser.
+const openai = new OpenAI({ apiKey: 'sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4' });
+
+export function Chat() {
+  const [answer, setAnswer] = useState('');
+
+  async function ask(question) {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: question }],
+    });
+    setAnswer(res.choices[0].message.content);
+  }
+
+  return (
+    <section>
+      <button onClick={() => ask('Where is my order?')}>Ask support</button>
+      <p>{answer}</p>
+    </section>
+  );
+}
+`;
+    return files;
+  })(),
+  expect: { 'ai-api-config': ['fail', 'check-it'] },
+};
+
+// -- auth-config: jsonwebtoken dep + jwt.sign() with a hardcoded secret literal --
+const M_AUTH_HARDCODED = {
+  slug: 'mach-speed-exam/mutant-auth-config-hardcoded-secret',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable with a jsonwebtoken dependency whose lib/auth.js signs sessions with a hardcoded secret literal instead of an env var. auth-config must flag it.",
+  files: (() => {
+    const deps = { ...STD_DEPS, jsonwebtoken: '^9.0.2' };
+    const files = healthyDeployableFiles({ name: 'acme-shop-api', deps, serverJs: SERVER_HEALTHY });
+    files['lib/auth.js'] = `const jwt = require('jsonwebtoken');
+
+function signSession(user) {
+  // Session token, valid for 30 days.
+  return jwt.sign({ userId: user.id }, 'a9f3k8d2s7h6g5f4d3s2a1z0x9c8v7b6');
+}
+
+function verifySession(token) {
+  return jwt.verify(token, 'a9f3k8d2s7h6g5f4d3s2a1z0x9c8v7b6');
+}
+
+module.exports = { signSession, verifySession };
+`;
+    return files;
+  })(),
+  expect: { 'auth-config': ['fail', 'check-it'] },
+};
+
+// -- object-storage: multer dep + uploads written to the local filesystem --
+const M_OBJECT_STORAGE_LOCAL = {
+  slug: 'mach-speed-exam/mutant-object-storage-local-upload',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable whose photo-upload route stores files on local disk via multer diskStorage (path.join(__dirname, 'uploads')) — ephemeral on Render/Railway, lost on every restart. object-storage must flag it.",
+  files: (() => {
+    const deps = { ...STD_DEPS, multer: '^1.4.5-lts.1' };
+    const serverJs = `const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'https://app.acme-corp.io';
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json());
+app.use(express.static('public'));
+app.use(require('./routes/upload'));
+
+const items = [{ id: 1, name: 'widget' }];
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/items', (req, res) => {
+  res.json({ items });
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('acme shop api listening on port ' + PORT);
+});
+`;
+    const files = healthyDeployableFiles({ name: 'acme-shop-api', deps, serverJs });
+    files['routes/upload.js'] = `const express = require('express');
+const multer = require('multer');
+const path = require('node:path');
+
+const router = express.Router();
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, path.join(__dirname, 'uploads')),
+  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname),
+});
+const upload = multer({ storage });
+
+router.post('/api/upload', upload.single('photo'), (req, res) => {
+  res.json({ saved: req.file.filename });
+});
+
+module.exports = router;
+`;
+    return files;
+  })(),
+  expect: { 'object-storage': ['fail', 'check-it'] },
+};
+
+// -- payment-config: stripe dep with a checkout route but NO webhook handler anywhere --
+const M_PAYMENT_NO_WEBHOOK = {
+  slug: 'mach-speed-exam/mutant-payment-config-no-webhook',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable with a stripe dependency and an env-based checkout route (api/billing.js) but no webhook endpoint anywhere — payment events are never handled. payment-config must flag it.",
+  files: (() => {
+    const deps = { ...STD_DEPS, stripe: '^16.2.0' };
+    const files = healthyDeployableFiles({ name: 'acme-shop-api', deps, serverJs: SERVER_HEALTHY });
+    files['api/billing.js'] = `const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+async function createCheckoutSession(itemId) {
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
+    success_url: process.env.APP_URL + '/success',
+    cancel_url: process.env.APP_URL + '/cancel',
+  });
+  return session;
+}
+
+module.exports = { createCheckoutSession };
+`;
+    return files;
+  })(),
+  expect: { 'payment-config': ['fail', 'check-it'] },
+};
+
+// -- platform-lock-in: depends on a proprietary Replit-only package --
+const M_PLATFORM_LOCKIN_REPLIT = {
+  slug: 'mach-speed-exam/mutant-platform-lock-in-replit-dep',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Healthy Express deployable that depends on @replit/object-storage — a proprietary Replit-only package that must be replaced before migrating anywhere. platform-lock-in must fail it.",
+  files: healthyDeployableFiles({
+    name: 'acme-shop-api',
+    deps: { ...STD_DEPS, '@replit/object-storage': '^1.0.1' },
+    serverJs: SERVER_HEALTHY,
+  }),
+  expect: { 'platform-lock-in': ['fail', 'check-it'] },
+};
+
+/* --------------------------------------------------------------------------
  * WAVE 2 — ADVERSARIAL MUTANTS. Each is engineered to slip past a KNOWN blind
  * spot in current detection logic (presence-only checks, filename gates,
  * comment-insensitive regexes, entropy thresholds, presence-only lockfiles).
@@ -973,6 +1146,11 @@ const C_PERFECT_DEPLOYABLE = {
     'database-config': ['not-applicable'],
     lockfile: ['pass'],
     secrets: ['pass'],
+    'ai-api-config': ['not-applicable'],
+    'auth-config': ['not-applicable'],
+    'object-storage': ['not-applicable'],
+    'payment-config': ['not-applicable'],
+    'platform-lock-in': ['pass'],
   },
 };
 
@@ -1052,6 +1230,11 @@ module.exports = { summarize };
     cors: ['not-applicable'],
     'static-files': ['not-applicable'],
     'database-config': ['not-applicable'],
+    'ai-api-config': ['not-applicable'],
+    'auth-config': ['not-applicable'],
+    'object-storage': ['not-applicable'],
+    'payment-config': ['not-applicable'],
+    'platform-lock-in': ['pass'],
   },
 };
 
@@ -1130,11 +1313,17 @@ export function tally<T>(values: T[]): Map<T, number> {
     cors: ['not-applicable'],
     'static-files': ['not-applicable'],
     'database-config': ['not-applicable'],
+    'ai-api-config': ['not-applicable'],
+    'auth-config': ['not-applicable'],
+    'object-storage': ['not-applicable'],
+    'payment-config': ['not-applicable'],
+    'platform-lock-in': ['pass'],
   },
 };
 
 /* --------------------------------------------------------------------------
- * The full fixture set: 12 mutants (one per specialist check) + 3 controls.
+ * The full fixture set: 12 wave-1 mutants (one per original check) + 5 mutants
+ * for the newer specialists + 7 wave-2 adversarial mutants + 3 controls = 27.
  * ------------------------------------------------------------------------ */
 
 export const FIXTURES = [
@@ -1151,6 +1340,12 @@ export const FIXTURES = [
   M_DATABASE_CONFIG,
   M_LOCKFILE,
   M_SECRETS,
+  // New specialists (ai-api-config, auth-config, object-storage, payment-config, platform-lock-in)
+  M_AI_API_EXPOSED,
+  M_AUTH_HARDCODED,
+  M_OBJECT_STORAGE_LOCAL,
+  M_PAYMENT_NO_WEBHOOK,
+  M_PLATFORM_LOCKIN_REPLIT,
   // Adversarial mutants (wave 2 — aimed at known blind spots)
   M_CORS_WIDE_OPEN,
   M_SECRETS_SPLIT,
