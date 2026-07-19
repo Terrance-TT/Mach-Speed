@@ -21,6 +21,7 @@ import * as aiApiConfig from './specialists/ai-api-config.js';
 import * as objectStorage from './specialists/object-storage.js';
 import * as paymentConfig from './specialists/payment-config.js';
 import * as platformLockIn from './specialists/platform-lock-in.js';
+import * as authConfig from './specialists/authentication-configuration.js';
 
 export const SPECIALISTS = [
   dynamicPort,
@@ -39,6 +40,7 @@ export const SPECIALISTS = [
   objectStorage,
   paymentConfig,
   platformLockIn,
+  authConfig,
 ];
 
 // Optional GitHub token — raises the API rate limit from 60 to 5,000 req/hr.

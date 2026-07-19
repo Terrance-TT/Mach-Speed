@@ -50,6 +50,7 @@ export const SPECIALIST_REGISTRY = {
   'object-storage': [RepoType.DEPLOYABLE, RepoType.SERVER, RepoType.FRAMEWORK],
   'payment-config': [RepoType.DEPLOYABLE, RepoType.SERVER, RepoType.FRAMEWORK],
   'platform-lock-in': ['all'],
+  'auth-config': [RepoType.DEPLOYABLE, RepoType.SERVER, RepoType.FRAMEWORK],
 };
 
 // Scoring weights (0-10 scale, how much each check matters)
@@ -71,6 +72,7 @@ export const WEIGHTS = {
   'object-storage': 7,
   'payment-config': 7,
   'platform-lock-in': 6,
+  'auth-config': 9,
 };
 
 // Validate that a specialist result follows the contract
