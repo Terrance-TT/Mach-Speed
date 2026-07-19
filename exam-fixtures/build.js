@@ -44,7 +44,7 @@ export function parseSlug(slug) {
  * (`expected` aliases `expectedType` so entries drop straight into
  * auto-verify's runSweep as { owner, repo, expected } repo entries.)
  */
-export async function buildFixtures(cacheDir) {
+export async function buildFixtures(cacheDir, fixtures = FIXTURES) {
   if (!cacheDir || typeof cacheDir !== 'string') {
     throw new Error('buildFixtures(cacheDir) requires a cache directory path');
   }
@@ -52,7 +52,7 @@ export async function buildFixtures(cacheDir) {
   await fsp.mkdir(root, { recursive: true });
 
   const manifest = [];
-  for (const spec of FIXTURES) {
+  for (const spec of fixtures) {
     const { owner, repo } = parseSlug(spec.slug);
     const dir = path.join(root, `${owner}__${repo}`);
 
