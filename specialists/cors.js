@@ -29,17 +29,7 @@ const CORS_PATTERNS = [
 ];
 
 const BACKEND_DEPS = ['express', 'fastify', 'koa', 'hono', 'elysia', 'hapi', 'sails', 'meteor', 'feathers', 'restify', 'polka', 'micro', 'connect', 'restana', '0http'];
-
-const FRAMEWORK_CONFIG_PATTERNS = [
-  /(^|\/)next\.config\./i,
-  /(^|\/)nuxt\.config\./i,
-  /(^|\/)astro\.config\./i,
-  /(^|\/)gatsby-config\./i,
-  /(^|\/)blitz\.config\./i,
-  /(^|\/)svelte\.config\./i,
-  /(^|\/)remix\.config\./i,
-  /(^|\/)redwood\.toml/i,
-];
+const CONTENT_FRAMEWORKS = ['next', 'nuxt', 'gatsby', 'astro', 'hexo', 'vuepress', 'vitepress', 'docusaurus', 'eleventy'];
 
 const EXCLUDED_PATH_RX = /(^|\/)(node_modules|\.git|\.next|out|dist|build|coverage|\.tmp|test|tests|__tests__|spec|example|examples|demo|demos|fixtures|fixture|mock|mocks|docs|playground|storybook|e2e|cypress|vitest|jest|benchmark|benchmarks|perf)\//i;
 
@@ -56,10 +46,12 @@ function isTutorial(packageJson) {
 function isLibraryOrFramework(packageJson, tree) {
   if (!packageJson) return false;
 
-  const name = (packageJson.name || '').toLowerCase();
+  const deps = packageJson.dependencies || {};
+  if (BACKEND_DEPS.some(d => deps[d])) return false;
+
   const keywords = (packageJson.keywords || []).map(k => k.toLowerCase());
   const scripts = packageJson.scripts || {};
-  const isPrivate = packageJson.private === true;
+  const hasServerScript = !!(scripts.start || scripts.serve || scripts['start:prod'] || scripts.preview || scripts.dev);
 
   const libKeywords = new Set([
     'library', 'framework', 'middleware', 'plugin', 'toolkit', 'sdk',
@@ -71,10 +63,6 @@ function isLibraryOrFramework(packageJson, tree) {
 
   const hasMain = !!(packageJson.main || packageJson.module || packageJson.exports || packageJson.typings || packageJson.types);
   const hasVersion = !!packageJson.version;
-
-  const serverScripts = ['start', 'serve', 'start:prod', 'preview', 'deploy', 'deploy:prod'];
-  const hasServerScript = serverScripts.some(s => !!scripts[s]);
-
   const hasPeerDeps = !!(packageJson.peerDependencies && Object.keys(packageJson.peerDependencies).length > 0);
 
   const hasPackagesDir = tree.some(p => /^packages\/[^/]+(?:\/|$)/.test(p));
@@ -82,7 +70,7 @@ function isLibraryOrFramework(packageJson, tree) {
   const hasExamplesDir = tree.some(p => /^examples\/[^/]+(?:\/|$)/.test(p));
   const hasTestDir = tree.some(p => /^(test|tests|__tests__|spec|specs)\/[^/]+(?:\/|$)/.test(p));
 
-  if (isPrivate && hasPackagesDir && !hasAppsDir && !hasServerScript) {
+  if (packageJson.private === true && hasPackagesDir && !hasAppsDir && !hasServerScript) {
     return true;
   }
 
@@ -98,55 +86,18 @@ function isLibraryOrFramework(packageJson, tree) {
     return true;
   }
 
-  const wellKnownLibPattern = /^(axios|node-fetch|undici|ky|got|superagent|request|isomorphic-unfetch|cross-fetch|underscore|ramda|moment|dayjs|chalk|debug|colors|qs|uuid|bcrypt|semver|glob|minimist|yargs|inquirer|ora|ms|mime|fresh|bytes|vary|methods|parseurl|path-to-regexp|merge-descriptors|content-type|cookie|cookie-signature|encodeurl|escape-html|http-errors|ipaddr\.js|media-typer|on-finished|proxy-addr|range-parser|raw-body|safe-buffer|safer-buffer|setprototypeof|statuses|type-is|unpipe|wrappy|yallist|lru-cache|ini|dotenv|cross-spawn|execa|which)\b/i;
-  if (wellKnownLibPattern.test(name) && !hasServerScript) {
-    return true;
-  }
-
-  return false;
-}
-
-function hasServerFootprint(tree, packageJson) {
-  if (!tree || tree.length === 0) return false;
-
-  if (packageJson && packageJson.dependencies) {
-    if (BACKEND_DEPS.some(d => packageJson.dependencies[d])) return true;
-  }
-
-  for (const p of tree) {
-    if (/(^|\/)node_modules\//.test(p)) continue;
-    if (EXCLUDED_PATH_RX.test(p)) continue;
-
-    if (/\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) {
-      if (/(^|\/)api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
-      if (/(^|\/)pages\/api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
-      if (/(^|\/)app\/api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
-      if (/(^|\/)src\/(?:pages\/api|app\/api)\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
-      if (/(^|\/)routes\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
-      if (/(^|\/)server\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
-      if (/(^|\/)controllers\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
-      if (/(^|\/)middleware\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
-
-      if (/^(src\/)?(server|app|listen|index|main|worker)\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) {
-        return true;
-      }
-    }
-
-    if (/^(vercel\.json|netlify\.toml|_headers|wrangler\.toml|fly\.toml|render\.yaml|app\.yaml|serverless\.yml)$/.test(p)) return true;
-  }
-
   return false;
 }
 
 function isStaticContentSite(packageJson, tree) {
   if (!packageJson) return false;
-  const deps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
+  const allDeps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
 
-  const contentFrameworks = ['next', 'nuxt', 'gatsby', 'astro', 'hexo', 'vuepress', 'vitepress', 'docusaurus', 'eleventy'];
-  const hasContentFramework = contentFrameworks.some(f => deps[f]);
+  if (BACKEND_DEPS.some(d => allDeps[d])) return false;
 
+  const hasContentFramework = CONTENT_FRAMEWORKS.some(f => allDeps[f]);
   const hasApiRoutes = tree.some(p => /\/(api|apis|rest|graphql|trpc)\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p) && !/(^|\/)node_modules\//.test(p) && !EXCLUDED_PATH_RX.test(p));
-  const hasServerEntry = tree.some(p => /^(src\/)?(server|app|listen)\.(js|ts|mjs|cjs|mts|cts)$/.test(p) && !/(^|\/)node_modules\//.test(p));
+  const hasServerEntry = tree.some(p => /^(src\/)?(server|app|listen|main|worker)\.(js|ts|mjs|cjs|mts|cts)$/.test(p) && !/(^|\/)node_modules\//.test(p));
 
   if (hasContentFramework && !hasApiRoutes && !hasServerEntry) {
     return true;
@@ -161,24 +112,37 @@ function isStaticContentSite(packageJson, tree) {
   return false;
 }
 
-function isClearBackendApi(packageJson, tree) {
-  if (!packageJson) return false;
-  const deps = packageJson.dependencies || {};
+function hasServerFootprint(tree, packageJson) {
+  if (!tree || tree.length === 0) return false;
 
-  const hasBackend = BACKEND_DEPS.some(d => deps[d]);
-  if (!hasBackend) return false;
+  const allDeps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
+  if (BACKEND_DEPS.some(d => allDeps[d])) return true;
 
-  const hasFullstackConfig = tree.some(p => FRAMEWORK_CONFIG_PATTERNS.some(rx => rx.test(p)) && !/(^|\/)node_modules\//.test(p));
-  if (hasFullstackConfig) return false;
+  for (const p of tree) {
+    if (/(^|\/)node_modules\//.test(p)) continue;
+    if (EXCLUDED_PATH_RX.test(p)) continue;
 
-  const scripts = packageJson.scripts || {};
-  const hasServerScript = !!(scripts.start || scripts.serve || scripts['start:prod'] || scripts.preview);
-  if (!hasServerScript) return false;
+    if (/\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) {
+      if (/(^|\/)api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)pages\/api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)app\/api\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)src\/(?:pages\/api|app\/api)\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)routes\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)server\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)controllers\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)handlers\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)endpoints\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
+      if (/(^|\/)middleware\/[^/]+\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) return true;
 
-  if (!hasServerFootprint(tree, packageJson)) return false;
-  if (isLibraryOrFramework(packageJson, tree)) return false;
+      if (/^(src\/)?(server|app|listen|index|main|worker)\.(js|ts|mjs|cjs|mts|cts)$/.test(p)) {
+        return true;
+      }
+    }
 
-  return true;
+    if (/^(vercel\.json|netlify\.toml|_headers|wrangler\.toml|fly\.toml|render\.yaml|app\.yaml|serverless\.yml)$/.test(p)) return true;
+  }
+
+  return false;
 }
 
 async function scanFilesForCors(tree, files) {
@@ -288,8 +252,21 @@ export async function check(context) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'No server or API endpoints detected — CORS not needed', findings: [] };
     }
 
-    if (isClearBackendApi(packageJson, tree)) {
-      return { checkId, status: 'fail', confidence: 'medium', message: 'Backend API service detected but no CORS configuration found', findings: [{ file: 'unknown', issue: 'Missing CORS configuration for API service' }] };
+    const allDeps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
+    const hasBackendDep = BACKEND_DEPS.some(d => allDeps[d]);
+
+    const hasFullstackConfig = tree.some(p => /(^|\/)next\.config\.|(^|\/)nuxt\.config\.|(^|\/)astro\.config\.|(^|\/)gatsby-config\./.test(p));
+    const hasFullstackDep = CONTENT_FRAMEWORKS.some(f => allDeps[f]);
+    const isFullstack = hasFullstackConfig || hasFullstackDep;
+
+    const hasApiRoutes = tree.some(p => /\/(api|apis|rest|graphql|trpc)\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p) && !/(^|\/)node_modules\//.test(p) && !EXCLUDED_PATH_RX.test(p));
+
+    if (isFullstack && !hasApiRoutes) {
+      return { checkId, status: 'not-applicable', confidence: 'high', message: 'Fullstack framework site without API routes — CORS not needed', findings: [] };
+    }
+
+    if (hasBackendDep) {
+      return { checkId, status: 'check-it', confidence: 'medium', message: 'Backend server detected without visible CORS configuration', findings: [{ file: 'unknown', issue: 'Verify CORS is configured for this API service' }] };
     }
 
     return {
