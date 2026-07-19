@@ -21,7 +21,7 @@ import * as aiApiConfig from './specialists/ai-api-config.js';
 import * as objectStorage from './specialists/object-storage.js';
 import * as paymentConfig from './specialists/payment-config.js';
 import * as platformLockIn from './specialists/platform-lock-in.js';
-import * as authConfig from './specialists/authentication-configuration.js';
+import * as authConfig from './specialists/auth-config.js';
 
 export const SPECIALISTS = [
   dynamicPort,
