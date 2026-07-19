@@ -1,10 +1,3 @@
-/**
- * Specialist: payment-config
- * Detects payment integration (Stripe, LemonSqueezy, Paddle) and checks if
- * webhook route + env vars are configured. stripe-replit-sync auto-handles
- * webhooks on Replit; other platforms need manual setup.
- */
-
 export const checkId = 'payment-config';
 export const name = 'Payment Configuration';
 export const appliesTo = ['deployable', 'server', 'framework'];
@@ -19,11 +12,16 @@ const STRIPE_PACKAGES = ['stripe', '@stripe/stripe-js', '@stripe/react-stripe-js
 
 const isFile = (p) => !p.endsWith('/');
 
+function stripComments(code) {
+  return code
+    .replace(/\/\/.*$/gm, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
 export async function check(context) {
   const { tree, files, packageJson } = context;
 
   try {
-    // Step 1: package.json deps — zero file reads, return early if no payment
     const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
     if (!PAYMENT_PACKAGES.some(p => deps[p])) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'No payment integration detected', findings: [] };
@@ -31,7 +29,6 @@ export async function check(context) {
     const hasStripe = STRIPE_PACKAGES.some(p => deps[p]);
     const replitSync = !!deps['stripe-replit-sync'];
 
-    // Step 2: webhook route + webhook secret env var (up to 8 file reads)
     const named = tree.filter(p => isFile(p) && /\/(webhook|stripe|payment)/.test(p) && /\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p)).slice(0, 5);
     const api = tree.filter(p => isFile(p) && /\/api\//.test(p) && /\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p)).slice(0, 5);
     const toScan = [...new Set([...named, ...api])].slice(0, 8);
@@ -43,14 +40,16 @@ export async function check(context) {
       try {
         const content = await files.get(filePath);
         if (!content) continue;
-        if (/constructEvent/.test(content) || (/webhook/i.test(content) && /stripe|lemonsqueezy|paddle/i.test(content))) {
+        const cleaned = stripComments(content);
+        if (/constructEvent/.test(cleaned) || (/webhook/i.test(cleaned) && /stripe|lemonsqueezy|paddle/i.test(cleaned))) {
           webhookFile = webhookFile || filePath;
         }
-        if (/WEBHOOK_SECRET/.test(content)) hasWebhookSecret = true;
-      } catch { /* skip unreadable file */ }
+        if (/WEBHOOK_SECRET/.test(cleaned)) hasWebhookSecret = true;
+      } catch (err) {
+        console.error(`Error reading ${filePath}:`, err);
+      }
     }
 
-    // Step 3: hardcoded Stripe secret key in frontend components (up to 5 reads)
     const frontend = tree.filter(p => isFile(p) && /\.(tsx|jsx)$/.test(p) && !/node_modules/.test(p)).slice(0, 5);
     const findings = [];
     for (const filePath of frontend) {
@@ -63,22 +62,24 @@ export async function check(context) {
             findings.push({ file: filePath, line: i + 1, issue: 'Stripe secret key exposed in frontend — move to backend env var' });
           }
         }
-      } catch { /* skip unreadable file */ }
+      } catch (err) {
+        console.error(`Error reading frontend file ${filePath}:`, err);
+      }
     }
     if (findings.length > 0) {
       return { checkId, status: 'fail', confidence: 'high', message: 'Stripe secret key exposed in frontend — move to backend env var immediately', findings };
     }
 
-    // Step 4: .env.example documentation
     let hasEnvDoc = false;
     if (tree.includes('.env.example')) {
       try {
         const content = await files.get('.env.example');
         if (content && /STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|LEMONSQUEEZY|PADDLE/.test(content)) hasEnvDoc = true;
-      } catch { /* skip */ }
+      } catch (err) {
+        console.error('Error reading .env.example:', err);
+      }
     }
 
-    // Decision matrix
     const provider = hasStripe ? 'Stripe' : 'Payment integration';
     if (!webhookFile) {
       return { checkId, status: 'check-it', confidence: 'high',
