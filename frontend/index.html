@@ -1,1 +1,116 @@
-<placeholder-see-below>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mach-Speed — Will it deploy?</title>
+  <meta name="description" content="Paste a GitHub repo. Mach-Speed runs 12 deployment-readiness checks and grades it 0–10." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%23e6e1d8' stroke-width='4'/%3E%3Cpath d='M16 3 A13 13 0 0 1 29 16' fill='none' stroke='%2317803c' stroke-width='4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%231b1917'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page">
+
+    <header class="site-header">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" opacity="0.2" stroke-width="4"/>
+          <path d="M16 3 A13 13 0 0 1 29 16" fill="none" stroke="#17803c" stroke-width="4" stroke-linecap="round"/>
+          <circle cx="16" cy="16" r="4" fill="currentColor"/>
+        </svg>
+        <span class="brand-name">Mach-Speed</span>
+      </div>
+      <span class="brand-tag">deployment readiness</span>
+    </header>
+
+    <main>
+      <!-- ── Hero / scan form ─────────────────────────────── -->
+      <section class="hero">
+        <h1>Will your app actually <span class="hl">deploy</span>?</h1>
+        <p class="lede">
+          Paste a GitHub repo. Mach-Speed checks the things that usually break
+          deployments — start scripts, ports, secrets, env vars — and grades it 0–10.
+        </p>
+
+        <form id="scan-form" class="scan-form" novalidate>
+          <input
+            id="repo-input"
+            type="text"
+            placeholder="github.com/you/your-app  or  you/your-app"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+          <button type="submit" id="scan-btn">Scan repo</button>
+        </form>
+
+        <div class="examples">
+          <span class="examples-label">Try one:</span>
+          <button type="button" class="chip" data-repo="Terrance-TT/Tempus">Tempus</button>
+          <button type="button" class="chip" data-repo="expressjs/express">express</button>
+          <button type="button" class="chip" data-repo="facebook/react">react</button>
+        </div>
+
+        <div id="recents" class="recents" hidden>
+          <span class="examples-label">Recent:</span>
+          <div id="recents-list" class="recents-list"></div>
+        </div>
+      </section>
+
+      <!-- ── Loading ──────────────────────────────────────── -->
+      <section id="loading" class="loading card" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="loading-msg" class="loading-msg">Contacting GitHub…</p>
+        <p class="loading-sub">A full scan usually takes 15–60 seconds.</p>
+      </section>
+
+      <!-- ── Error ────────────────────────────────────────── -->
+      <div id="error" class="error-banner" role="alert" hidden></div>
+
+      <!-- ── Results ──────────────────────────────────────── -->
+      <section id="results" hidden>
+
+        <div class="overview card">
+          <div class="gauge-wrap">
+            <svg class="gauge" viewBox="0 0 120 120" aria-hidden="true">
+              <circle class="gauge-bg" cx="60" cy="60" r="52"/>
+              <circle class="gauge-arc" id="gauge-arc" cx="60" cy="60" r="52"/>
+            </svg>
+            <div class="gauge-text">
+              <span id="score-num">–</span><span class="gauge-max">/10</span>
+            </div>
+          </div>
+
+          <div class="overview-meta">
+            <div class="overview-top">
+              <a id="repo-link" class="repo-link" href="#" target="_blank" rel="noopener"></a>
+              <span id="verdict" class="verdict"></span>
+              <span id="repo-type" class="repo-type"></span>
+            </div>
+            <p id="overview-note" class="overview-note"></p>
+            <div id="summary-strip" class="summary-strip"></div>
+          </div>
+        </div>
+
+        <div class="filters" id="filters" role="tablist">
+          <button type="button" class="filter active" data-filter="all">All</button>
+          <button type="button" class="filter" data-filter="fail">Failed</button>
+          <button type="button" class="filter" data-filter="check-it">Check it</button>
+          <button type="button" class="filter" data-filter="pass">Passed</button>
+          <button type="button" class="filter" data-filter="not-applicable">N/A</button>
+        </div>
+
+        <div id="checks" class="checks-grid"></div>
+
+        <p class="scan-again">Scan another repo from the box above.</p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Mach-Speed · modular static analysis for deployment readiness</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
