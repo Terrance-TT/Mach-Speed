@@ -109,12 +109,72 @@ const HOSTING_CONFIGS = [
   'wrangler.toml', 'wrangler.json', 'cloudflare.json'
 ];
 
+const LIKELY_BUILD_DIRS = new Set(['dist', 'build', 'out', 'output', '.next', '.nuxt', 'storybook-static']);
+
 const isNonAppPath = (p) => /\/(test|tests|__tests__|spec|e2e|fixtures?|examples?|demo|node_modules|\.next|dist|build|coverage|vendor)\//.test(p);
 
 const getDeps = (pkg) => {
   if (!pkg || typeof pkg !== 'object') return {};
   return { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
 };
+
+function normalizeServedPath(p) {
+  if (!p || typeof p !== 'string') return null;
+  p = p.trim();
+  if (p === '.' || p === './') return null;
+  if (p.startsWith('/')) return null;
+  if (p.includes('..')) return null;
+  return p.replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+function treeHasDir(tree, dir) {
+  const d = dir.replace(/^\.\//, '').replace(/\/+$/, '');
+  if (!d) return false;
+  return tree.some(entry => {
+    const e = entry.replace(/\/+$/, '');
+    return e === d || e.startsWith(d + '/');
+  });
+}
+
+const PATH_EXTRACTION_PATTERNS = [
+  /express\.static\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /serveStatic\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /sirv\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /serveDir\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /serve\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /mount\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /sendFile\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /sendfile\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /send_static_file\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /http\.StripPrefix\s*\(\s*['"`]([^'"`]+)['"`]/,
+  /Bun\.serve\s*\([^)]*static[^)]*['"`]([^'"`]+)['"`]/,
+  /root\s*:\s*['"`]([^'"`]+)['"`]/,
+  /base\s*:\s*['"`]([^'"`]+)['"`]/,
+  /baseDir\s*:\s*['"`]([^'"`]+)['"`]/,
+  /dir\s*:\s*['"`]([^'"`]+)['"`]/,
+  /fromDir\s*:\s*['"`]([^'"`]+)['"`]/,
+  /path\s*:\s*['"`]([^'"`]+)['"`]/,
+  /publicDir\s*:\s*['"`]([^'"`]+)['"`]/,
+];
+
+function extractServedPath(line) {
+  for (const rx of PATH_EXTRACTION_PATTERNS) {
+    const m = line.match(rx);
+    if (m && m[1]) {
+      const p = normalizeServedPath(m[1]);
+      if (p) return p;
+    }
+  }
+  if (/(express\.static|serveStatic|sirv\s*\(|serveDir\s*\(|serve\s*\(|mount\s*\(|sendFile\s*\(|sendfile\s*\(|send_static_file)/.test(line)) {
+    const regex = /['"`]([^'"`]+)['"`]/g;
+    let mm;
+    while ((mm = regex.exec(line)) !== null) {
+      const p = normalizeServedPath(mm[1]);
+      if (p) return p;
+    }
+  }
+  return null;
+}
 
 export async function check(context) {
   const { tree, files, packageJson, repoType } = context;
@@ -245,39 +305,76 @@ export async function check(context) {
         (hasCodeExt || isBinScript) &&
         !/(test|spec|example|\.d\.ts|stories|fixture)/i.test(basename) &&
         !/(node_modules|\.next|dist|build|coverage|vendor)\//.test(p) &&
-        /\b(server|app|index|main|middleware|router|handler|route|static|config|www|cli|worker|bin|entry|start|setup|bootstrap|listen|factory|web|http|api|service|init|gateway|proxy|daemon|serve)\b/i.test(basename)
+        /\b(server|app|index|main|middleware|router|handler|route|routes|static|config|www|cli|worker|bin|entry|start|setup|bootstrap|listen|factory|web|http|api|service|init|gateway|proxy|daemon|serve|services|listeners|handlers|utils|helpers|controllers|middlewares|src|source|lib|core|backend|frontend|express|fastify|koa|hono|nest|next|nuxt|astro|remix|svelte|vite)\b/i.test(basename)
       );
     });
 
-    const priority = /(server|app|index|main|middleware|router|handler|route|static|config|www|cli|worker|bin|entry|start|setup|bootstrap|listen|factory|web|http|api|service|init|gateway|proxy|daemon|serve)/i;
+    const priority = /(server|app|index|main|middleware|router|handler|route|routes|static|config|www|cli|worker|bin|entry|start|setup|bootstrap|listen|factory|web|http|api|service|init|gateway|proxy|daemon|serve|express|fastify|koa|hono|nest|src|source|lib|core)/i;
     sourceFiles.sort((a, b) => {
       const aBase = a.split('/').pop() || '';
       const bBase = b.split('/').pop() || '';
       const aEntry = entryFiles.has(a) || entryFiles.has(aBase) ? 4 : 0;
       const bEntry = entryFiles.has(b) || entryFiles.has(bBase) ? 4 : 0;
-      const aNamed = priority.test(a) ? 2 : 0;
-      const bNamed = priority.test(b) ? 2 : 0;
+      const aNamed = priority.test(aBase) ? 2 : 0;
+      const bNamed = priority.test(bBase) ? 2 : 0;
       return (bEntry + bNamed) - (aEntry + aNamed);
     });
+
+    let hasValidStaticServe = false;
+    let hasInvalidStaticServe = false;
+    const invalidServeFindings = [];
 
     for (const filePath of sourceFiles.slice(0, 20)) {
       try {
         const content = await files.get(filePath);
         if (!content) continue;
-        for (const pattern of CODE_PATTERNS) {
-          if (pattern.test(content)) {
-            return {
-              checkId,
-              status: 'pass',
-              confidence: 'high',
-              message: `Static file serving detected in ${filePath}`,
-              findings: [{ file: filePath, issue: 'Static file serving configuration found' }]
-            };
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const trimmed = line.trim();
+          if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) continue;
+
+          for (const pattern of CODE_PATTERNS) {
+            if (pattern.test(line)) {
+              const servedPath = extractServedPath(line);
+              if (servedPath) {
+                if (treeHasDir(tree, servedPath)) {
+                  hasValidStaticServe = true;
+                } else if (!LIKELY_BUILD_DIRS.has(servedPath)) {
+                  hasInvalidStaticServe = true;
+                  invalidServeFindings.push({
+                    file: filePath,
+                    line: i + 1,
+                    issue: `Static serving references path '${servedPath}' which does not exist in the repository`
+                  });
+                }
+              }
+            }
           }
         }
       } catch (e) {
         console.error(`static-files: read error for ${filePath}:`, e);
       }
+    }
+
+    if (hasValidStaticServe) {
+      return {
+        checkId,
+        status: 'pass',
+        confidence: 'high',
+        message: 'Static file serving configuration verified',
+        findings: []
+      };
+    }
+
+    if (hasInvalidStaticServe && hasRelevantStatic) {
+      return {
+        checkId,
+        status: 'fail',
+        confidence: 'high',
+        message: 'Static file serving code references a non-existent path while static assets exist elsewhere unserved',
+        findings: invalidServeFindings
+      };
     }
 
     if (repoType === 'library' || repoType === 'tool') {
