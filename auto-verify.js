@@ -481,7 +481,7 @@ function buildScoreboard({ winners, losers, rejected, merged, tagName, preMergeS
     }
     md.push('');
     md.push('### Undo (if anything looks wrong)', '');
-    md.push(`Main was at commit \`${preMergeSha}\` before these merges, tagged **\`${tagName}\**`.`);
+    md.push(`Main was at commit \`${preMergeSha}\` before these merges, tagged **\`${tagName}\`**.`);
     md.push('Each merged PR also has a **Revert** button on GitHub — one click undoes one specialist.');
     md.push('');
   } else if (winners.length) {
