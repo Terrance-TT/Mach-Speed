@@ -87,7 +87,7 @@ function shouldSkipForBadPatterns(filePath) {
 }
 
 function isAppLevelPath(filePath) {
-  return !/(^|[\/])(packages|examples|test|tests|spec|__tests__|fixtures?|playground|docs|website|www|scripts|\.github)[\/]/i.test(filePath);
+  return !/(^|[\/])(test|tests|spec|__tests__|fixtures?|examples?|playground|docs|website|www|scripts|\.github|e2e|coverage|storybook|\.storybook|public|static|assets|mocks?|stubs?|demos?|benchmarks?)[\/]/i.test(filePath);
 }
 
 export async function check(context) {
@@ -189,6 +189,19 @@ export async function check(context) {
       return [...STRONG_INDICATOR_PATTERNS, ...WEAK_INDICATOR_PATTERNS].some(pat => pat.test(p));
     }).sort((a, b) => a.split('/').length - b.split('/').length);
     add(other.slice(0, 15), 70);
+
+    // Fallback: when DB dep is present, scan general app source files shallowest-first
+    // to catch hidden DB setup in arbitrarily-named files (e.g. lib/store.js)
+    if (hasDbDep) {
+      const generalSource = tree.filter(p => {
+        if (!/\.(js|ts|mjs|cjs)$/i.test(p)) return false;
+        if (/(node_modules|\.git|dist|build|out|\.next|\.nuxt|\.astro|output|coverage)/i.test(p)) return false;
+        if (/(^|[\/])(test|tests|spec|__tests__|fixtures?|examples?|playground|docs|website|www|scripts|\.github|e2e|storybook|\.storybook|public|static|assets|mocks?|stubs?|demos?|benchmarks?|ci)[\/]/i.test(p)) return false;
+        if (/(^|[\/])(vite|webpack|rollup|esbuild|tsup|tailwind|postcss|jest|vitest|playwright|cypress|eslint|prettier|babel|swc|docker|nginx)[^\/]*\.(js|ts|mjs|cjs)$/i.test(p)) return false;
+        return true;
+      }).sort((a, b) => a.split('/').length - b.split('/').length);
+      add(generalSource.slice(0, 20), 50);
+    }
 
     const sourceFiles = candidates.slice(0, MAX_READS).map(c => c.file);
 
