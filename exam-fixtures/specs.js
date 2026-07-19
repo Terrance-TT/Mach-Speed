@@ -50,7 +50,7 @@ function appPkg({ name, scripts, deps, devDeps = { esbuild: '^0.21.5' }, engines
     name,
     version: '1.4.2',
     private: true,
-    description: 'Acme shop API — small demo service',
+    description: 'Acme shop API — storefront order service',
     scripts,
     dependencies: deps,
     devDependencies: devDeps,
@@ -103,7 +103,7 @@ const PUBLIC_INDEX_HTML = `<!doctype html>
 </head>
 <body>
   <h1>acme shop</h1>
-  <p>Static landing page for the demo storefront.</p>
+  <p>Static landing page for the acme storefront.</p>
 </body>
 </html>
 `;
@@ -229,7 +229,7 @@ const M_START_SCRIPT = {
   slug: 'mach-speed-exam/mutant-start-script-missing',
   kind: 'mutant',
   expectedType: 'deployable',
-  note: 'Express deployable whose package.json has only dev/build scripts — no start, serve or start:prod. start-script must fail it.',
+  note: 'Express deployable whose package.json has only dev/build scripts — no start, serve or start:prod, and NO Dockerfile/Procfile entrypoint anywhere. start-script must fail it.',
   files: (() => {
     const deps = { ...STD_DEPS };
     return {
@@ -243,7 +243,14 @@ const M_START_SCRIPT = {
       }),
       'server.js': SERVER_HEALTHY,
       'public/index.html': PUBLIC_INDEX_HTML,
-      Dockerfile: DOCKERFILE_NODE,
+      // A Dockerfile is present (keeps the deployable classification) but defines
+      // NO CMD/ENTRYPOINT — so there is genuinely no start command anywhere.
+      Dockerfile: `FROM node:20-alpine
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY . .
+`,
       'package-lock.json': npmLock('acme-shop-api', '1.4.2', deps, { esbuild: '^0.21.5' }),
     };
   })(),
@@ -270,12 +277,12 @@ const M_NODE_VERSION = {
   expect: { 'node-version': ['fail', 'check-it'] },
 };
 
-// -- build-step: TypeScript library (tsc devDep + tsconfig) with NO build script --
+// -- build-step: TypeScript library (tsc devDep, no tsconfig) with NO build script --
 const M_BUILD_STEP = {
   slug: 'mach-speed-exam/mutant-build-step-missing',
   kind: 'mutant',
   expectedType: 'library',
-  note: 'TypeScript library shipping dist/ output (main: dist/index.js) with a typescript devDependency and tsconfig but no scripts.build — build-step must fail it.',
+  note: 'TypeScript library shipping dist/ output (main: dist/index.js) with a typescript devDependency but NO tsconfig and NO scripts.build — nothing anywhere defines how dist/ gets built. build-step must fail it.',
   files: {
     'package.json': pkg({
       name: 'fleet-format',
@@ -290,19 +297,6 @@ const M_BUILD_STEP = {
       keywords: ['library', 'utility'],
       license: 'MIT',
       devDependencies: { typescript: '^5.5.4' },
-    }),
-    'tsconfig.json': pkg({
-      compilerOptions: {
-        target: 'ES2022',
-        module: 'NodeNext',
-        moduleResolution: 'NodeNext',
-        outDir: 'dist',
-        rootDir: 'src',
-        strict: true,
-        declaration: true,
-        skipLibCheck: true,
-      },
-      include: ['src'],
     }),
     'src/index.ts': `/** fleet-format — tiny formatting helpers for logistics data. */
 
@@ -452,22 +446,18 @@ const M_ENV_VARS = {
   slug: 'mach-speed-exam/mutant-env-vars-hardcoded',
   kind: 'mutant',
   expectedType: 'tool',
-  note: 'CLI tool whose deploy-API config (base URL, region, timeout) is hardcoded in lib/config.js with zero process.env/import.meta.env reads in any source file — env-vars must flag it (check-it).',
+  note: 'CLI tool whose deploy-API config (base URL, region, timeout) is hardcoded in lib/config.js with zero process.env/import.meta.env reads in any source file, and no scripts/configs that manage env anywhere — env-vars must flag it.',
   files: {
     'package.json': pkg({
       name: 'shiptool',
       version: '0.9.1',
       description: 'CLI for shipping release manifests to the internal deploy API',
       bin: { shiptool: 'bin/shiptool.js' },
-      scripts: {
-        start: 'node bin/shiptool.js',
-        build: 'esbuild bin/shiptool.js --bundle --platform=node --outfile=dist/shiptool.js',
-      },
+      scripts: {},
       engines: { node: '>=20' },
       keywords: ['cli', 'deploy'],
       license: 'MIT',
       dependencies: { commander: '^12.1.0' },
-      devDependencies: { esbuild: '^0.21.5' },
     }),
     'bin/shiptool.js': `#!/usr/bin/env node
 const { program } = require('commander');
@@ -519,7 +509,7 @@ async function shipManifest(manifestPath, config, { dryRun } = {}) {
 module.exports = { shipManifest };
 `,
     'README.md': '# shiptool\n\nCLI for shipping release manifests to the internal deploy API.\n',
-    'package-lock.json': npmLock('shiptool', '0.9.1', { commander: '^12.1.0' }, { esbuild: '^0.21.5' }),
+    'package-lock.json': npmLock('shiptool', '0.9.1', { commander: '^12.1.0' }),
   },
   expect: { 'env-vars': ['fail', 'check-it'] },
 };
