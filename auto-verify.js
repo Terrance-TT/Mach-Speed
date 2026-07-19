@@ -663,9 +663,10 @@ export async function autoverify(argv = process.argv.slice(2)) {
             flips: regressionFlips(baseRows, [...postRows.train.rows, ...postRows.hold.rows], checkId),
             crashes: newCrashes(baseRows, [...postRows.train.rows, ...postRows.hold.rows], checkId),
           };
-          // Fixture gate (per candidate): mutants caught must not drop vs baseline;
-          // positive controls must stay 100% green (absolute mode). Catching MORE
-          // mutants than baseline counts as a merge-worthy improvement (see decideMerge).
+          // Fixture gate (per candidate), ABSOLUTE mode: a rewrite must catch EVERY
+          // mutant for its check (zero missed) and keep every positive control green.
+          // Catching MORE mutants than baseline counts as a merge-worthy improvement
+          // (see decideMerge) — so closing a known gap is always mergeable.
           const baseCaught = fixBaseMap?.get(checkId)?.mutantsCaught ?? 0;
           const postCaught = fixPostMap?.get(checkId)?.mutantsCaught ?? 0;
           const fixtureGate = (fixBaseMap && fixPostMap)
@@ -673,7 +674,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
                 ...fixtureVerdict(
                   new Map([[checkId, fixBaseMap.get(checkId)]]),
                   new Map([[checkId, fixPostMap.get(checkId)]]),
-                  { positivesMode: 'absolute' }),
+                  { positivesMode: 'absolute', mutantsMode: 'absolute' }),
                 mutantsGained: postCaught > baseCaught,
               }
             : null;
