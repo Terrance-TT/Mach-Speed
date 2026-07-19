@@ -26,12 +26,28 @@ const EXTERNAL_PACKAGES = [ // uploads go to external object storage
   '@supabase/storage-js', '@google-cloud/storage', '@azure/storage-blob', 'multer-s3',
 ];
 
-const FS_UPLOAD_PATTERNS = [
-  /fs\.writeFile\s*\(\s*['"](uploads|upload|files|images|public\/uploads)/,
-  /createWriteStream\s*\(\s*['"](uploads|upload|files|images|public\/uploads)/,
-  /express\.static\s*\(\s*['"](uploads|upload|files|images)/,
-  /path\.join\s*\([^)]*['"](uploads|upload|files|images)/,
+const UPLOAD_DIR_RE = '(?:uploads?|files?|images?|media|assets?|attachments?|documents?|storage|downloads?)';
+
+const UPLOAD_TREE_DIRS = [
+  'uploads/', 'upload/', 'files/', 'file/', 'images/', 'image/', 'media/',
+  'assets/', 'attachments/', 'attachment/', 'documents/', 'document/',
+  'storage/', 'downloads/', 'download/',
+  'public/uploads/', 'public/files/', 'public/media/', 'public/images/', 'public/assets/',
 ];
+
+const FS_UPLOAD_PATTERNS = [
+  new RegExp(`fs\\.writeFile(?:Sync)?\\s*\\(\\s*['"\`][^'"\`]*${UPLOAD_DIR_RE}`, 'i'),
+  new RegExp(`fs\\.promises\\.writeFile\\s*\\(\\s*['"\`][^'"\`]*${UPLOAD_DIR_RE}`, 'i'),
+  new RegExp(`fs\\.appendFile(?:Sync)?\\s*\\(\\s*['"\`][^'"\`]*${UPLOAD_DIR_RE}`, 'i'),
+  new RegExp(`createWriteStream\\s*\\(\\s*['"\`][^'"\`]*${UPLOAD_DIR_RE}`, 'i'),
+  new RegExp(`fs\\.(?:rename|copyFile)(?:Sync)?\\s*\\(\\s*[^,]*,\\s*['"\`][^'"\`]*${UPLOAD_DIR_RE}`, 'i'),
+  new RegExp(`path\\.join\\s*\\([^)]*['"\`][^'"\`]*${UPLOAD_DIR_RE}`, 'i'),
+  new RegExp(`express\\.static\\s*\\(\\s*['"\`][^'"\`]*${UPLOAD_DIR_RE}`, 'i'),
+  /multer\.diskStorage/i,
+  new RegExp(`uploadDir\\s*:\\s*['"\`][^'"\`]*${UPLOAD_DIR_RE}`, 'i'),
+];
+
+const SERVER_PATH_RE = /^(src|app|api|routes|lib|server|controllers|middleware|handlers|pages|functions|workers|services|modules|bin)\//;
 
 export async function check(context) {
   const { tree, files, packageJson } = context;
@@ -41,7 +57,6 @@ export async function check(context) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'Empty repo — no object storage needed', findings: [] };
     }
 
-    // Step 1: package.json storage packages (zero file reads)
     const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
     const hasReplitStorage = !!deps['@replit/object-storage'];
     const hasS3 = !!(deps['@aws-sdk/client-s3'] || deps['aws-sdk']);
@@ -49,7 +64,7 @@ export async function check(context) {
     const hasMulterS3 = !!deps['multer-s3'];
     const hasExternal = EXTERNAL_PACKAGES.some(p => deps[p]);
     const hasAnyStorage = STORAGE_PACKAGES.some(p => deps[p]);
-    const hasUploadsDir = tree.some(p => p.startsWith('uploads/') || p.startsWith('public/uploads/'));
+    const hasUploadsDir = tree.some(p => UPLOAD_TREE_DIRS.some(prefix => p.startsWith(prefix)));
     const findings = [];
 
     if (hasReplitStorage) {
@@ -57,15 +72,18 @@ export async function check(context) {
       return { checkId, status: 'fail', confidence: 'high', message: 'Replit Object Storage detected — will break on migration. Migrate to Cloudflare R2 or AWS S3', findings };
     }
 
-    // Step 2: local filesystem upload patterns (scan up to 8 source files)
     let hasLocalUpload = false;
     const sourceFiles = tree.filter(p => {
       if (!isFile(p)) return false;
       if (!/\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p)) return false;
       if (/node_modules/.test(p)) return false;
-      if (/\.test\./.test(p)) return false;
-      return /^(src|app|api|routes|lib|server)\//.test(p) || !p.includes('/');
-    }).slice(0, 8);
+      if (/\.test\.|\.spec\.|__tests__|__mocks__/.test(p)) return false;
+      return true;
+    }).sort((a, b) => {
+      const aScore = SERVER_PATH_RE.test(a) || !a.includes('/') ? 1 : 0;
+      const bScore = SERVER_PATH_RE.test(b) || !b.includes('/') ? 1 : 0;
+      return bScore - aScore;
+    }).slice(0, 12);
 
     for (const filePath of sourceFiles) {
       try {
@@ -73,26 +91,31 @@ export async function check(context) {
         if (!content) continue;
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const isImportLine = /^\s*(?:import|const|let|var)\b/.test(line) && /(?:require|from)\s*\(?\s*['"\`]/.test(line);
+          if (isImportLine) continue;
           for (const pat of FS_UPLOAD_PATTERNS) {
-            if (pat.test(lines[i])) {
+            if (pat.test(line)) {
               findings.push({ file: filePath, line: i + 1, issue: 'File upload writes to local disk — will be lost on platform restart' });
               hasLocalUpload = true;
               break;
             }
           }
         }
-      } catch { /* skip unreadable file */ }
+      } catch (e) {
+        console.error(`object-storage: error reading ${filePath}:`, e.message);
+      }
     }
-    // Step 3: multer without S3
+
     const multerNoS3 = hasMulter && !hasMulterS3 && !hasS3;
     if (multerNoS3) {
       findings.push({ file: 'package.json', issue: 'multer detected without multer-s3 — uploads stored on local disk. Use @aws-sdk/client-s3 with multer memory storage + S3 upload.' });
     }
-    // Step 4: uploads/ directory with no external object storage
+
     if (hasUploadsDir && !hasExternal) {
       findings.push({ file: 'uploads/', issue: 'Uploads directory found with no external object storage — files will be lost on restart' });
     }
-    // Decision matrix
+
     if (hasLocalUpload || (hasUploadsDir && !hasExternal)) {
       return { checkId, status: 'fail', confidence: 'high', message: 'File uploads stored on local disk — filesystem is ephemeral on Render/Railway. Use S3/R2', findings };
     }
@@ -103,7 +126,7 @@ export async function check(context) {
       return { checkId, status: 'pass', confidence: 'high', message: 'File uploads configured with S3 storage', findings };
     }
     if (hasExternal) {
-      const label = hasS3 ? 'S3/R2' : EXTERNAL_PACKAGES.find(p => deps[p]);
+      const label = hasS3 ? 'S3/R2' : EXTERNAL_PACKAGES.find(p => deps[p]) || 'external provider';
       return { checkId, status: 'pass', confidence: 'high', message: `Object storage configured: ${label} detected`, findings };
     }
     if (hasAnyStorage) {
