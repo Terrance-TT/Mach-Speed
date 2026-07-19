@@ -1,4 +1,4 @@
-// specialists/authentication-configuration.js — Detects auth config (Clerk, Firebase, NextAuth, Auth0...) and checks
+// specialists/auth-config.js — Detects auth config (Clerk, Firebase, NextAuth, Auth0...) and checks
 // if it's externalized to env vars. Auth breaks on domain changes — each platform needs the new domain.
 export const checkId = 'auth-config';
 export const name = 'authentication configuration';
