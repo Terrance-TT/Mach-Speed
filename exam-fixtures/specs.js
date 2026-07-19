@@ -1580,3 +1580,6 @@ export const FIXTURES = [
   C_PERFECT_TOOL,
   C_PERFECT_LIBRARY,
 ];
+
+// Shared builders, exported for the seeded generator (exam-fixtures/generate.js).
+export { pkg, npmLock, appPkg, healthyDeployableFiles, SERVER_HEALTHY, STD_SCRIPTS, STD_DEPS, DOCKERFILE_NODE, PUBLIC_INDEX_HTML };
