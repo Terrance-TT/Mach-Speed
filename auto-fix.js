@@ -307,7 +307,7 @@ OUTPUT RULES (strict):
 - No prose, no explanation, no extra code blocks — just the one block.
 - The module must be self-contained (no new dependencies) and follow the contract exactly.`;
 
-function buildFixPrompt(checkId, evidenceMd, currentCode) {
+function buildFixPrompt(checkId, evidenceMd, currentCode, specRel = `specialists/${checkId}.js`) {
   return `# YOUR CONTRACT
 Every specialist MUST export these 4 things:
 - checkId: unique string ID (keep it EXACTLY '${checkId}')
@@ -339,7 +339,7 @@ The context object gives you:
 # EVIDENCE (holistic problems detected across 15 real public repos — fix THESE)
 ${evidenceMd}
 
-# CURRENT MODULE CODE (specialists/${checkId}.js)
+# CURRENT MODULE CODE (${specRel})
 \`\`\`javascript
 ${currentCode}
 \`\`\`
@@ -517,18 +517,44 @@ export function scanEvidence(evidenceDir) {
     .sort((a, b) => b.severityScore - a.severityScore);
 }
 
+// ── Specialist file resolution ──
+// A specialist's FILENAME is not required to equal its checkId —
+// specialists/authentication-configuration.js exports checkId 'auth-config'.
+// Assuming `specialists/<checkId>.js` silently skips such specialists (auth-config
+// went never-attempted for exactly this reason). Resolve via the exported checkId.
+// Returns Map<checkId, repo-relative path> e.g. 'specialists/authentication-configuration.js'.
+export function buildSpecialistFileMap(repoRoot) {
+  const dir = path.join(repoRoot, 'specialists');
+  const map = new Map();
+  if (!fs.existsSync(dir)) return map;
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith('.js') || f.startsWith('.') || f.startsWith('_')) continue;
+    let src;
+    try { src = fs.readFileSync(path.join(dir, f), 'utf8'); } catch { continue; }
+    const m = src.match(/export\s+const\s+checkId\s*=\s*['"]([\w-]+)['"]/);
+    if (m && !map.has(m[1])) map.set(m[1], `specialists/${f}`);
+  }
+  return map;
+}
+
+/** Resolve the repo-relative file for a checkId (filename may differ from checkId). */
+export function specialistFileFor(specFileMap, checkId) {
+  return (specFileMap && specFileMap.get(checkId)) || `specialists/${checkId}.js`;
+}
+
 // ── Fix one specialist (Moonshot call + validation + optional retry) ──
 async function fixSpecialist(checkId, severity, evidenceMd, ctx) {
-  const { moonshot, threads, repoRoot, retries, saveLock } = ctx;
-  const specPath = path.join(repoRoot, 'specialists', `${checkId}.js`);
+  const { moonshot, threads, repoRoot, retries, saveLock, specFileMap } = ctx;
+  const specRel = specialistFileFor(specFileMap, checkId);
+  const specPath = path.join(repoRoot, specRel);
   if (!fs.existsSync(specPath)) {
-    return { checkId, ok: false, reason: `specialists/${checkId}.js not found — skipped` };
+    return { checkId, ok: false, reason: `no specialist file exporting checkId '${checkId}' — skipped` };
   }
   const currentCode = fs.readFileSync(specPath, 'utf8');
 
   const thread = await threads.load(checkId);
   const messages = [{ role: 'system', content: SYSTEM_PROMPT }, ...thread];
-  messages.push({ role: 'user', content: buildFixPrompt(checkId, evidenceMd, currentCode) });
+  messages.push({ role: 'user', content: buildFixPrompt(checkId, evidenceMd, currentCode, specRel) });
 
   for (let round = 0; round <= retries; round++) {
     await sleep(CALL_SPACING_MS);
@@ -632,6 +658,9 @@ export async function autofix(argv = process.argv.slice(2)) {
   fs.mkdirSync(opt.out, { recursive: true });
 
   const fixed = [], failed = [];
+  // Filenames may differ from checkIds (auth-config lives in
+  // authentication-configuration.js) — resolve real paths once, up front.
+  const specFileMap = buildSpecialistFileMap(repoRoot);
   // Thread saves commit to the shared state branch — serialize them (the Moonshot
   // chats themselves run FIX_CONCURRENCY-wide) so concurrent branch commits can't race.
   let saveChain = Promise.resolve();
@@ -642,7 +671,7 @@ export async function autofix(argv = process.argv.slice(2)) {
     const evidenceMd = fs.readFileSync(path.join(opt.evidence, `${checkId}.md`), 'utf8');
     try {
       const result = await fixSpecialist(checkId, severityScore, evidenceMd, {
-        moonshot, threads, repoRoot, retries: opt.retries, saveLock,
+        moonshot, threads, repoRoot, retries: opt.retries, saveLock, specFileMap,
       });
       if (!result.ok) {
         console.log(`    [${checkId}] SKIPPED: ${result.reason}`);
@@ -654,7 +683,7 @@ export async function autofix(argv = process.argv.slice(2)) {
       if (opt.pr && gh) {
         const branch = `auto-fix/${checkId}`;
         await gh.ensureBranch(branch, await gh.defaultBranchSha());
-        await gh.putFile(`specialists/${checkId}.js`, result.code, branch,
+        await gh.putFile(specialistFileFor(specFileMap, checkId), result.code, branch,
           `auto-fix(${checkId}): rewrite from auto-heal evidence (severity ${severityScore})`);
         const pr = await gh.openOrUpdatePr(branch,
           `auto-fix(${checkId}): rewrite from auto-heal evidence`,
