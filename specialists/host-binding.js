@@ -273,6 +273,8 @@ export async function check(context) {
       findings.push({ file, line, issue });
     }
 
+    const IPV4_STRING = /['"`]((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))['"`]/;
+
     const scripts = packageJson?.scripts || {};
     for (const [scriptName, cmd] of Object.entries(scripts)) {
       if (/(?:-H|--host|--hostname)\s+['"]?0\.0\.0\.0['"]?\b/.test(cmd)) {
@@ -281,12 +283,26 @@ export async function check(context) {
       } else if (/(?:-H|--host|--hostname)\s+['"]?(?:localhost|127\.0\.0\.1)['"]?\b/.test(cmd)) {
         foundBad = true;
         addFinding('package.json', 0, `Script "${scriptName}" flags host as localhost`);
-      } else if (/\bHOST\s*=\s*['"]?0\.0\.0\.0['"]?\b/.test(cmd) || /\bBIND_ADDRESS\s*=\s*['"]?0\.0\.0\.0['"]?\b/.test(cmd)) {
+      } else {
+        const m = cmd.match(/(?:-H|--host|--hostname)\s+['"]?((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))['"]?\b/);
+        if (m) {
+          foundBad = true;
+          addFinding('package.json', 0, `Script "${scriptName}" flags host as specific IP ${m[1]}`);
+        }
+      }
+
+      if (/\bHOST\s*=\s*['"]?0\.0\.0\.0['"]?\b/.test(cmd) || /\bBIND_ADDRESS\s*=\s*['"]?0\.0\.0\.0['"]?\b/.test(cmd)) {
         foundGood = true;
         addFinding('package.json', 0, `Script "${scriptName}" sets HOST to 0.0.0.0`);
       } else if (/\bHOST\s*=\s*['"]?(?:localhost|127\.0\.0\.1)['"]?\b/.test(cmd)) {
         foundBad = true;
         addFinding('package.json', 0, `Script "${scriptName}" sets HOST to localhost`);
+      } else {
+        const m = cmd.match(/\bHOST\s*=\s*['"]?((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))['"]?\b/);
+        if (m) {
+          foundBad = true;
+          addFinding('package.json', 0, `Script "${scriptName}" sets HOST to specific IP ${m[1]}`);
+        }
       }
     }
 
@@ -311,6 +327,15 @@ export async function check(context) {
             } else if (/['"]localhost['"]|['"]127\.0\.0\.1['"]/.test(line) || /\bHOST\s*=\s*localhost\b/.test(line)) {
               foundBad = true;
               addFinding(filePath, i + 1, 'Docker config binds to localhost');
+            } else {
+              const m = line.match(IPV4_STRING);
+              if (m) {
+                const ip = m[1];
+                if (ip !== '0.0.0.0' && ip !== '127.0.0.1') {
+                  foundBad = true;
+                  addFinding(filePath, i + 1, `Docker config binds to specific IP ${ip}`);
+                }
+              }
             }
           }
           continue;
@@ -323,17 +348,29 @@ export async function check(context) {
           } else if (/^(?:HOST|BIND_ADDRESS)\s*=\s*localhost/.test(line)) {
             foundBad = true;
             addFinding(filePath, i + 1, 'Env file sets HOST to localhost');
+          } else {
+            const m = line.match(/^(?:HOST|BIND_ADDRESS)\s*=\s*((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))/);
+            if (m) {
+              foundBad = true;
+              addFinding(filePath, i + 1, `Env file sets HOST to specific IP ${m[1]}`);
+            }
           }
           continue;
         }
 
         if (isConfig) {
-          if (/["']?host["']?\s*[:=]\s*['"]0\.0\.0\.0['"]/i.test(line)) {
+          if (/["']?host["']?\s*[:=]\s*['"]?0\.0\.0\.0['"]?/i.test(line)) {
             foundGood = true;
             addFinding(filePath, i + 1, 'Config sets host to 0.0.0.0');
-          } else if (/["']?host["']?\s*[:=]\s*['"](?:localhost|127\.0\.0\.1)['"]/i.test(line)) {
+          } else if (/["']?host["']?\s*[:=]\s*['"]?(?:localhost|127\.0\.0\.1)['"]?/i.test(line)) {
             foundBad = true;
             addFinding(filePath, i + 1, 'Config sets host to localhost');
+          } else {
+            const m = line.match(/["']?host["']?\s*[:=]\s*['"]?((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))['"]?/i);
+            if (m) {
+              foundBad = true;
+              addFinding(filePath, i + 1, `Config binds to specific IP ${m[1]} — use 0.0.0.0 for cloud deployment`);
+            }
           }
           if (/\bHOST\s*:\s*0\.0\.0\.0/.test(line) || /-\s*HOST\s*=\s*0\.0\.0\.0/.test(line)) {
             foundGood = true;
@@ -341,6 +378,12 @@ export async function check(context) {
           } else if (/\bHOST\s*:\s*(?:localhost|127\.0\.0\.1)/.test(line) || /-\s*HOST\s*=\s*(?:localhost|127\.0\.0\.1)/.test(line)) {
             foundBad = true;
             addFinding(filePath, i + 1, 'Config sets HOST to localhost');
+          } else {
+            const m = line.match(/\bHOST\s*:\s*((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))/);
+            if (m) {
+              foundBad = true;
+              addFinding(filePath, i + 1, `Config sets HOST to specific IP ${m[1]} — use 0.0.0.0 for cloud deployment`);
+            }
           }
           continue;
         }
@@ -352,10 +395,8 @@ export async function check(context) {
 
         if (!hasListen && !hasBunServe && !hasDenoServe && !hasCreateServer) continue;
 
-        const hasGoodLiteral = /['"]0\.0\.0\.0['"]|['"]::['"]/.test(line);
-        const hasBadLiteral = /['"]127\.0\.0\.1['"]|['"]localhost['"]/i.test(line);
-        const hasEnvHost = /process\.env\.(?:HOST|BIND_ADDRESS|SERVER_HOST)/.test(line);
-        const hasHostKey = /\b(?:host|hostname)\s*:/.test(line);
+        const hasGoodLiteral = /['"`]0\.0\.0\.0['"`]|['"`]::['"`]/.test(line);
+        const hasBadLiteral = /['"`]127\.0\.0\.1['"`]|['"`]localhost['"`]/i.test(line);
 
         if (hasGoodLiteral) {
           foundGood = true;
@@ -367,11 +408,23 @@ export async function check(context) {
           addFinding(filePath, i + 1, 'Explicitly binds to localhost');
           continue;
         }
+
+        const specificIpMatch = line.match(IPV4_STRING);
+        if (specificIpMatch) {
+          const ip = specificIpMatch[1];
+          foundBad = true;
+          addFinding(filePath, i + 1, `Binds to specific IP ${ip} — use 0.0.0.0 for cloud deployment`);
+          continue;
+        }
+
+        const hasEnvHost = /process\.env\.(?:HOST|BIND_ADDRESS|SERVER_HOST)/.test(line);
         if (hasEnvHost) {
           foundEnvHost = true;
           addFinding(filePath, i + 1, 'Host determined by environment variable');
           continue;
         }
+
+        const hasHostKey = /\b(?:host|hostname)\s*:/.test(line);
         if (hasHostKey) {
           foundEnvHost = true;
           addFinding(filePath, i + 1, 'Host set via configuration object (value unclear)');
@@ -390,7 +443,7 @@ export async function check(context) {
         checkId,
         status: 'fail',
         confidence: 'high',
-        message: 'Server binds to localhost/127.0.0.1 only — must use 0.0.0.0 for cloud deployment',
+        message: 'Server binds to localhost/127.0.0.1 or a specific IP — must use 0.0.0.0 for cloud deployment',
         findings,
       };
     }
