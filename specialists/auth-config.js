@@ -1,5 +1,3 @@
-// specialists/auth-config.js — Detects auth config (Clerk, Firebase, NextAuth, Auth0...) and checks
-// if it's externalized to env vars. Auth breaks on domain changes — each platform needs the new domain.
 export const checkId = 'auth-config';
 export const name = 'authentication configuration';
 export const appliesTo = ['deployable', 'server', 'framework'];
@@ -7,22 +5,21 @@ export const appliesTo = ['deployable', 'server', 'framework'];
 const isFile = (p) => !p.endsWith('/');
 
 const AUTH_PACKAGES = [
-  { pkg: '@clerk/clerk-react', name: 'Clerk' },
-  { pkg: '@clerk/nextjs', name: 'Clerk' },
-  { pkg: '@clerk/clerk-sdk-node', name: 'Clerk' },
-  { pkg: '@clerk/expo', name: 'Clerk' },
-  { pkg: '@clerk/astro', name: 'Clerk' },
   { pkg: 'next-auth', name: 'NextAuth' },
-  { pkg: '@auth/core', name: 'Auth.js' },
-  { pkg: '@auth/nextjs', name: 'Auth.js' },
   { pkg: 'firebase', name: 'Firebase Auth' },
   { pkg: '@auth0/nextjs-auth0', name: 'Auth0' },
-  { pkg: '@supabase/supabase-js', name: 'Supabase Auth' },
-  { pkg: '@supabase/auth-helpers-nextjs', name: 'Supabase Auth' },
   { pkg: 'passport', name: 'Passport.js' },
   { pkg: 'jsonwebtoken', name: 'Custom JWT' },
   { pkg: 'jose', name: 'Custom JWT' },
   { pkg: 'jwt-decode', name: 'Custom JWT' },
+  { pkg: 'express-session', name: 'Express Session' },
+  { pkg: 'cookie-parser', name: 'Cookie Parser' },
+];
+
+const AUTH_PREFIXES = [
+  { prefix: '@clerk/', name: 'Clerk' },
+  { prefix: '@auth/', name: 'Auth.js' },
+  { prefix: '@supabase/', name: 'Supabase Auth' },
 ];
 
 const ENV_VARS_BY_PROVIDER = {
@@ -33,6 +30,8 @@ const ENV_VARS_BY_PROVIDER = {
   'Supabase Auth': ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
   'Passport.js': ['SESSION_SECRET'],
   'Custom JWT': ['JWT_SECRET'],
+  'Express Session': ['SESSION_SECRET'],
+  'Cookie Parser': ['COOKIE_SECRET'],
 };
 
 const DASHBOARD_HINTS = {
@@ -45,21 +44,66 @@ const DASHBOARD_HINTS = {
 };
 
 const DANGEROUS_PATTERNS = [
-  /CLERK_SECRET_KEY\s*[:=]\s*["']sk_/,       // Clerk secret in code
-  /jwt\.sign\s*\([^,]+,\s*["'][^"']+["']/,   // JWT secret as string literal
-  /AUTH0_SECRET\s*[:=]\s*["']/,              // Auth0 secret hardcoded
-  /SESSION_SECRET\s*[:=]\s*["'][^"']{8,}/,   // Session secret hardcoded
+  /CLERK_SECRET_KEY\s*[:=]\s*["']sk_/,
+  /CLERK_SECRET_KEY\s*[:=]\s*["'][^"']+/,
+  /AUTH0_SECRET\s*[:=]\s*["'][^"']+/,
+  /SESSION_SECRET\s*[:=]\s*["'][^"']{8,}/,
+  /COOKIE_SECRET\s*[:=]\s*["'][^"']{8,}/,
+  /jwt\.sign\s*\(.*,\s*["'][^"']+["']/,
+  /jwt\.verify\s*\(.*,\s*["'][^"']+["']/,
+  /\.setSecret\s*\(\s*["'][^"']+["']/,
+  /createHmac\s*\(\s*["'][^"']+["']\s*,\s*["'][^"']+["']\s*\)/,
+  /cookieParser\s*\(\s*["'][^"']+["']\s*\)/,
+  /process\.env\.(?:JWT_SECRET|NEXTAUTH_SECRET|AUTH0_SECRET|SESSION_SECRET|CLERK_SECRET_KEY|COOKIE_SECRET)\s*(?:\|\||\?\?)\s*["'][^"']+["']/,
+  /(?:const|let|var)\s+(?:JWT_SECRET|NEXTAUTH_SECRET|AUTH0_SECRET|SESSION_SECRET|CLERK_SECRET_KEY|COOKIE_SECRET)\s*=\s*["'][^"']+["']/,
 ];
+
+const EXCLUDED_PATH_PARTS = [
+  'node_modules', '.git', 'dist', 'build', 'coverage', '.next', 'out',
+  'test', 'tests', '__tests__', 'fixtures', 'e2e', 'playground', 'benchmark',
+  'examples', 'docs', 'public', '.cache', '.turbo', 'storybook-static', '.vercel',
+  'generated', 'tmp', 'temp', '.husky', '.github', '.vscode', '.storybook',
+];
+
+const isSourceFile = (p) => {
+  if (!isFile(p)) return false;
+  if (!/\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p)) return false;
+  if (p.endsWith('.d.ts')) return false;
+  if (/\.(test|spec)\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p)) return false;
+  const parts = p.split('/');
+  return !parts.some(part => EXCLUDED_PATH_PARTS.includes(part));
+};
+
+const scoreFile = (p) => {
+  const lower = p.toLowerCase();
+  let score = 0;
+  if (/auth/.test(lower)) score += 3;
+  if (/config/.test(lower)) score += 2;
+  if (/secret|jwt|session|passport|login|oauth|token|middleware|crypto|cookie/.test(lower)) score += 1;
+  return score;
+};
 
 export async function check(context) {
   const { tree, files, packageJson } = context;
 
   try {
-    // Step 1: tree-level check — auth packages in package.json (zero file reads)
-    const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
+    const deps = {
+      ...(packageJson?.dependencies || {}),
+      ...(packageJson?.devDependencies || {}),
+      ...(packageJson?.peerDependencies || {}),
+      ...(packageJson?.optionalDependencies || {}),
+    };
+
     const foundAuth = [];
     for (const { pkg, name } of AUTH_PACKAGES) {
       if (deps[pkg]) foundAuth.push({ pkg, name });
+    }
+    for (const { prefix, name } of AUTH_PREFIXES) {
+      for (const pkg of Object.keys(deps)) {
+        if (pkg.startsWith(prefix) && !foundAuth.some(f => f.pkg === pkg)) {
+          foundAuth.push({ pkg, name });
+        }
+      }
     }
 
     if (foundAuth.length === 0) {
@@ -68,35 +112,41 @@ export async function check(context) {
 
     const providerName = foundAuth[0].name;
 
-    // Step 2: check for env var documentation (up to 3 file reads, stop early)
-    const envFiles = ['.env.example', '.env.local.example', '.env.template'];
+    const envNames = ['.env.example', '.env.local.example', '.env.template', '.env.sample'];
+    const envCandidates = tree.filter(p => isFile(p) && envNames.some(n => p.endsWith(n)));
     const expectedVars = ENV_VARS_BY_PROVIDER[providerName] || [];
     let hasEnvExample = false;
     let foundVars = [];
 
-    for (const envFile of envFiles) {
-      if (!tree.includes(envFile)) continue;
+    for (const envFile of envCandidates.slice(0, 3)) {
       try {
         const content = await files.get(envFile);
         if (!content) continue;
         hasEnvExample = true;
-        for (const v of expectedVars) if (content.includes(v)) foundVars.push(v);
-        break; // found one, stop
-      } catch (e) { /* skip */ }
+        for (const v of expectedVars) {
+          if (content.includes(v) && !foundVars.includes(v)) foundVars.push(v);
+        }
+        if (foundVars.length >= expectedVars.length) break;
+      } catch (e) {
+        console.error(`auth-config: error reading ${envFile}:`, e);
+      }
     }
 
-    // Step 3: scan up to 10 source files for hardcoded auth secrets
-    const sourceFiles = tree.filter(p => {
-      if (!isFile(p)) return false;
-      if (!/\.(js|ts|jsx|tsx|mjs|cjs)$/.test(p)) return false;
-      if (/node_modules/.test(p)) return false;
-      if (/\.test\./.test(p)) return false;
-      if (/\.spec\./.test(p)) return false;
-      return /^(src|app|lib|api|pages|middleware)/.test(p) || !p.includes('/');
-    }).slice(0, 10);
+    const candidates = tree.filter(isSourceFile);
+    const priority = [];
+    const rest = [];
+    const priorityRe = /(^|\/)(auth|config|session|jwt|secret|passport|middleware|login|oauth|signin|signup|token|guard|protect|crypto|cookie)/i;
 
+    for (const p of candidates) {
+      if (priorityRe.test(p)) priority.push(p);
+      else rest.push(p);
+    }
+
+    priority.sort((a, b) => scoreFile(b) - scoreFile(a));
+    const scanFiles = priority.concat(rest).slice(0, 30);
     const findings = [];
-    for (const filePath of sourceFiles) {
+
+    for (const filePath of scanFiles) {
       try {
         const content = await files.get(filePath);
         if (!content) continue;
@@ -105,6 +155,7 @@ export async function check(context) {
           const line = lines[i];
           const trimmed = line.trimStart();
           if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) continue;
+
           for (const pat of DANGEROUS_PATTERNS) {
             if (pat.test(line)) {
               findings.push({ file: filePath, line: i + 1, issue: 'Auth secret hardcoded in source code — move to env var' });
@@ -112,26 +163,47 @@ export async function check(context) {
             }
           }
         }
-      } catch (e) { /* skip */ }
+      } catch (e) {
+        console.error(`auth-config: error reading ${filePath}:`, e);
+      }
     }
 
-    // Decision matrix
     if (findings.length > 0) {
       return { checkId, status: 'fail', confidence: 'high', message: 'Auth secret key hardcoded — move to env var immediately', findings };
     }
 
-    if (hasEnvExample && foundVars.length > 0) {
-      const hint = DASHBOARD_HINTS[providerName] || `Add new domain to ${providerName} allowed origins`;
-      const envFindings = foundVars.map(v => ({ file: '.env.example', issue: `${v} documented` }));
-      return { checkId, status: 'pass', confidence: 'high', message: `Auth configured: ${providerName}. ${hint}`, findings: envFindings };
+    if (hasEnvExample && (expectedVars.length === 0 || foundVars.length > 0)) {
+      const missing = expectedVars.filter(v => !foundVars.includes(v));
+      if (missing.length === 0) {
+        const hint = DASHBOARD_HINTS[providerName] || `Add new domain to ${providerName} allowed origins`;
+        return { checkId, status: 'pass', confidence: 'high', message: `Auth configured: ${providerName}. ${hint}`, findings: [] };
+      }
+      return {
+        checkId,
+        status: 'check-it',
+        confidence: 'medium',
+        message: `Auth configured: ${providerName} but env example missing vars: ${missing.join(', ')}`,
+        findings: missing.map(v => ({ file: envCandidates[0] || '.env.example', issue: `Missing expected env var: ${v}` }))
+      };
     }
 
     if (!hasEnvExample) {
-      return { checkId, status: 'check-it', confidence: 'medium', message: `Auth detected but no .env.example — create one with ${providerName} env vars`, findings: [] };
+      return {
+        checkId,
+        status: 'check-it',
+        confidence: 'medium',
+        message: `Auth detected but no .env.example — create one with ${providerName} env vars`,
+        findings: [{ file: 'package.json', issue: `Auth package ${foundAuth[0].pkg} detected but no .env.example found in repo` }]
+      };
     }
 
-    return { checkId, status: 'check-it', confidence: 'medium', message: 'Auth detected but no env var documentation found', findings: [] };
-
+    return {
+      checkId,
+      status: 'check-it',
+      confidence: 'medium',
+      message: 'Auth detected but env vars not fully documented',
+      findings: [{ file: 'package.json', issue: `Auth package ${foundAuth[0].pkg} detected but expected env vars not found in .env.example` }]
+    };
   } catch (err) {
     console.error('auth-config check error:', err);
     return { checkId, status: 'check-it', confidence: 'low', message: `Error: ${err.message}`, findings: [{ file: 'internal', issue: err.message }] };
