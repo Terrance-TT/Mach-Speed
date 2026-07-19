@@ -47,6 +47,8 @@ import { execFile } from 'child_process';
 import { pathToFileURL } from 'url';
 import { installFetchMiddleware, detectPatterns, TEST_REPOS } from './auto-heal.js';
 import { prefetchRepos, pool, REPO_CACHE_ENV } from './repo-cache.js';
+import { buildFixtures, fixtureSlugs, FIXTURE_OWNER } from './exam-fixtures/build.js';
+import { evaluateFixtureRows, fixtureVerdict } from './exam-fixtures/evaluate.js';
 import {
   Moonshot, ThreadStore, GitHubApi, SYSTEM_PROMPT, STATE_BRANCH,
   extractModule, validateModuleSource, validateModuleRuntime,
@@ -83,13 +85,14 @@ export const HOLDOUT_REPOS = [
 const ALL_TEST_SLUGS = [
   ...TEST_REPOS.map(r => `${r.owner}/${r.repo}`.toLowerCase()),
   ...HOLDOUT_REPOS.map(r => `${r.owner}/${r.repo}`.toLowerCase()),
+  ...fixtureSlugs().map(s => s.toLowerCase()),
 ];
 // Distinctive owner/org names. Deliberately EXCLUDES names that are also legit tech
 // terms a specialist may reference (vercel->vercel.json, nodejs, nuxt, astro, webpack,
 // supabase, fastify, nestjs, strapi, axios, prettier, react as package names).
 const BANNED_OWNER_TOKENS = [
   'facebook', 'calcom', 'withastro', 'expressjs', 'sveltejs', 'lodash',
-  'microsoft', 'tryghost', 'date-fns', 'remix-run', 'vitejs',
+  'microsoft', 'tryghost', 'date-fns', 'remix-run', 'vitejs', FIXTURE_OWNER,
 ];
 
 export function antiGameLint(checkId, code) {
@@ -296,7 +299,7 @@ export function newCrashes(beforeRows, afterRows, checkId) {
 }
 
 // ── The gate ──
-export function decideMerge({ lintHits, trainBase, trainPost, holdBase, holdPost, flips, crashes }) {
+export function decideMerge({ lintHits, trainBase, trainPost, holdBase, holdPost, flips, crashes, fixtures }) {
   const reasons = [];
   if (lintHits.length) reasons.push(`anti-gaming lint: ${lintHits.join('; ')}`);
 
@@ -325,14 +328,18 @@ export function decideMerge({ lintHits, trainBase, trainPost, holdBase, holdPost
   if (flips.length) harm.push(`${flips.length} repo(s) got worse: ${flips.slice(0, 3).map(f => `${f.repo} (${f.from} -> ${f.to})`).join(', ')}`);
   if (crashes.length) harm.push(`${crashes.length} new crash(es): ${crashes.slice(0, 2).map(c => c.repo).join(', ')}`);
 
-  return { verdict: improved && harm.length === 0 && lintHits.length === 0 ? 'merge' : 'retry', reasons: [...reasons, ...harm] };
+  // Fixture exam: mutants must not escape, positive controls must stay green.
+  const fixturesOk = !fixtures || fixtures.ok;
+  if (fixtures && !fixtures.ok) harm.push(...fixtures.reasons);
+
+  return { verdict: improved && harm.length === 0 && lintHits.length === 0 && fixturesOk ? 'merge' : 'retry', reasons: [...reasons, ...harm] };
 }
 
 const pct = (x) => (x === null || x === undefined) ? 'n/a' : `${(x * 100).toFixed(0)}%`;
 
 // ── Feedback message for a rejected rewrite (sent into the same specialist thread) ──
 function buildFeedbackMessage(checkId, reasons, metrics) {
-  const { trainBase, trainPost, holdBase, holdPost, flips, crashes } = metrics;
+  const { trainBase, trainPost, holdBase, holdPost, flips, crashes, fixtureDetail } = metrics;
   const lines = [
     `VERIFICATION RESULTS for your previous '${checkId}' rewrite: it was REJECTED by the automated gate.`,
     '',
@@ -348,6 +355,15 @@ function buildFeedbackMessage(checkId, reasons, metrics) {
   if (crashes.length) {
     lines.push('- New crashes:');
     for (const c of crashes.slice(0, 4)) lines.push(`    - ${c.repo}: ${c.message}`);
+  }
+  if (fixtureDetail && (fixtureDetail.mutantsMissed.length || fixtureDetail.positivesLost.length)) {
+    lines.push('- Fixture exam failures (synthetic repos with known-correct answers):');
+    for (const m of fixtureDetail.mutantsMissed.slice(0, 4)) {
+      lines.push(`    - MISSED MUTANT ${m.slug}: ${m.note} — you returned '${m.status}', a correct specialist must flag it`);
+    }
+    for (const l of fixtureDetail.positivesLost.slice(0, 4)) {
+      lines.push(`    - FALSE POSITIVE on ${l.slug}: ${l.note} — you returned '${l.status}', a correct specialist must pass it`);
+    }
   }
   lines.push('', 'Why it was rejected:');
   for (const r of reasons) lines.push(`  - ${r}`);
@@ -436,7 +452,9 @@ function buildScoreboard({ winners, losers, rejected, merged, tagName, preMergeS
     'evidence, plus **8 hidden repos it has never seen**. A fix is merged only if it is',
     'measurably better on the visible repos AND causes zero damage on the hidden ones —',
     'so memorizing the test answers cannot win. Anything that got worse was sent back to',
-    'the AI with the failure details attached, and re-tested (up to ' + rounds + ' rounds).', '',
+    'the AI with the failure details attached, and re-tested (up to ' + rounds + ' rounds).',
+    'On top of that, every rewrite runs the **fixture exam**: synthetic repos with known-injected',
+    'faults it must catch, and provably-correct repos it must not flag.', '',
     '## Results', '',
     '| Specialist | Severity (visible) | Severity (hidden) | Regressions | Decision |',
     '|-----------|--------------------|-------------------|-------------|----------|',
@@ -573,6 +591,16 @@ export async function autoverify(argv = process.argv.slice(2)) {
       (pre.failed.length ? ` — ${pre.failed.length} fetch live (${pre.failed.map(f => f.slug).join(', ')})` : ''));
   }
 
+  // ── 4.6 Materialize the fixture exam (mutants + positive controls) into the
+  // same snapshot cache — the sweeps below then measure them like real repos.
+  let fixtureManifest = null;
+  if (process.env[REPO_CACHE_ENV]) {
+    fixtureManifest = await buildFixtures(path.resolve(process.env[REPO_CACHE_ENV]));
+    console.log(`  Fixture exam: ${fixtureManifest.length} synthetic repos ready (mutants + positive controls)`);
+  } else {
+    console.log('  Fixture exam: SKIPPED (no repo cache dir configured)');
+  }
+
   // ── 5. Baselines ──
   const runnerPath = ensureRunner(repoRoot);
   const winners = [], finalLosers = [];
@@ -581,6 +609,16 @@ export async function autoverify(argv = process.argv.slice(2)) {
     const trainBase = await loadTrainBaseline(opt.evidence, repoRoot, runnerPath);
     const holdBase = await runSweep(repoRoot, runnerPath, holdoutRepos, 'hidden-baseline');
     const baseRows = [...trainBase.rows, ...holdBase.rows];
+
+    // Fixture baseline: how many mutants the CURRENT specialists catch, and
+    // whether the positive controls are green. Candidates are measured against this.
+    const fixtureRepos = fixtureManifest
+      ? fixtureManifest.map(f => ({ owner: f.owner, repo: f.repo, expected: f.expectedType }))
+      : null;
+    const fixBase = fixtureRepos
+      ? await runSweep(repoRoot, runnerPath, fixtureRepos, 'fixtures-base')
+      : null;
+    const fixBaseMap = fixBase ? evaluateFixtureRows(fixBase.rows, fixtureManifest) : null;
 
     // ── 6. Test rounds ──
     let active = candidates.filter(id => state.get(id).reasons.length === 0);
@@ -598,10 +636,15 @@ export async function autoverify(argv = process.argv.slice(2)) {
         const codes = Object.fromEntries(active.map(id => [id, state.get(id).code]));
         const backups = applyCandidates(repoRoot, codes);
         let postRows;
+        let fixPostMap = null;
         try {
           const trainPost = await runSweep(repoRoot, runnerPath, TEST_REPOS, `train-r${round}`);
           const holdPost = await runSweep(repoRoot, runnerPath, holdoutRepos, `hidden-r${round}`);
           postRows = { train: trainPost, hold: holdPost };
+          if (fixtureRepos) {
+            const fixPost = await runSweep(repoRoot, runnerPath, fixtureRepos, `fixtures-r${round}`);
+            fixPostMap = evaluateFixtureRows(fixPost.rows, fixtureManifest);
+          }
         } finally {
           restoreCandidates(repoRoot, backups);
         }
@@ -616,8 +659,17 @@ export async function autoverify(argv = process.argv.slice(2)) {
             flips: regressionFlips(baseRows, [...postRows.train.rows, ...postRows.hold.rows], checkId),
             crashes: newCrashes(baseRows, [...postRows.train.rows, ...postRows.hold.rows], checkId),
           };
-          const decision = decideMerge({ lintHits: s.lintHits, ...metrics });
-          const record = { checkId, code: s.code, ...metrics, reasons: decision.reasons, rounds: round };
+          // Fixture gate (per candidate): mutants caught must not drop vs baseline;
+          // positive controls must stay 100% green (absolute mode).
+          const fixtureGate = (fixBaseMap && fixPostMap)
+            ? fixtureVerdict(
+                new Map([[checkId, fixBaseMap.get(checkId)]]),
+                new Map([[checkId, fixPostMap.get(checkId)]]),
+                { positivesMode: 'absolute' })
+            : null;
+          const decision = decideMerge({ lintHits: s.lintHits, ...metrics, fixtures: fixtureGate });
+          const fixtureDetail = fixPostMap ? fixPostMap.get(checkId) : null;
+          const record = { checkId, code: s.code, ...metrics, fixtureDetail, reasons: decision.reasons, rounds: round };
           s.history.push(record);
           if (decision.verdict === 'merge') {
             console.log(`    ✅ ${checkId}: PASSED the gate (severity ${metrics.trainBase.severity}→${metrics.trainPost.severity}, hidden ${metrics.holdBase.severity}→${metrics.holdPost.severity}, 0 regressions)`);
@@ -779,6 +831,10 @@ function scoreCommentFor(w) {
     `| Hidden (8 repos the AI never saw) | ${w.holdBase.severity} | ${w.holdPost.severity} | ${pct(w.holdBase.checkItRate)} | ${pct(w.holdPost.checkItRate)} |`,
     '',
     `Regression flips: **${w.flips.length}** · New crashes: **${w.crashes.length}** · Anti-gaming lint: **clean**`,
+    ...(w.fixtureDetail ? [
+      '',
+      `Fixture exam (synthetic repos with known answers): mutants **${w.fixtureDetail.mutantsCaught}/${w.fixtureDetail.mutantsTotal}** caught · positive controls **${w.fixtureDetail.positivesGreen}/${w.fixtureDetail.positivesTotal}** green`,
+    ] : []),
     '',
     '_Merged automatically by auto-verify.js — revert this PR from the GitHub UI if anything looks off._',
   ].join('\n');
