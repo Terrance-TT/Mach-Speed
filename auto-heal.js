@@ -27,6 +27,8 @@ import { RepoType, SPECIALIST_REGISTRY } from './contract.js';
 import { analyzeRepo } from './central.js';
 import { prefetchRepos, createCachedFetch, pool, REPO_CACHE_ENV } from './repo-cache.js';
 import { buildFixtures } from './exam-fixtures/build.js';
+import { FIXTURES } from './exam-fixtures/specs.js';
+import { resolveExamSeed, generateFixtures } from './exam-fixtures/generate.js';
 import { evaluateFixtureRows } from './exam-fixtures/evaluate.js';
 import fs from 'fs';
 import path from 'path';
@@ -545,8 +547,8 @@ export function generateEvidence(checkId, patterns, allResults, repoTypeMap, tes
 // Mutants carry one known injected fault the specialist MUST flag; positive
 // controls are provably correct and must NOT be flagged. Gaps become part of
 // the evidence so the AI sees exactly what it missed.
-export async function runFixtureExam(cacheDir, { concurrency = ANALYSIS_CONCURRENCY, timeoutMs = REPO_TIMEOUT_MS } = {}) {
-  const manifest = await buildFixtures(cacheDir);
+export async function runFixtureExam(cacheDir, { concurrency = ANALYSIS_CONCURRENCY, timeoutMs = REPO_TIMEOUT_MS, fixtures } = {}) {
+  const manifest = await buildFixtures(cacheDir, fixtures);
   const rows = [];
   const repoTypeDrift = [];
   await pool(manifest, concurrency, async (f) => {
@@ -687,9 +689,16 @@ export async function autoheal(argv = process.argv.slice(2)) {
   // Fully offline: fixtures are local snapshots in the same cache as the real repos.
   // Gaps fold into evidence + severity in Phase 2 so the loop works on them.
   let fixtureExam = null;
+  let examSeed = null;
+  let examPerfect = false;
   if (process.env[REPO_CACHE_ENV]) {
+    // Dynamic exam: the static specs PLUS a seeded, rotating generated set.
+    // Same seed -> identical fixtures, so heal and verify face the same exam.
+    examSeed = await resolveExamSeed();
+    const generated = generateFixtures(examSeed);
     console.log('\n  Phase 1.5: fixture exam (mutants + positive controls, offline)...');
-    fixtureExam = await runFixtureExam(path.resolve(process.env[REPO_CACHE_ENV]));
+    console.log(`    Exam seed: ${examSeed} (${FIXTURES.length} static + ${generated.length} generated fixtures)`);
+    fixtureExam = await runFixtureExam(path.resolve(process.env[REPO_CACHE_ENV]), { fixtures: [...FIXTURES, ...generated] });
     let mTotal = 0, mCaught = 0, pTotal = 0, pGreen = 0;
     for (const [, g] of fixtureExam.evaluations) {
       mTotal += g.mutantsTotal; mCaught += g.mutantsCaught;
@@ -705,6 +714,8 @@ export async function autoheal(argv = process.argv.slice(2)) {
     }
     fs.writeFileSync(path.join(outputDir, 'fixtures.json'), JSON.stringify({
       generatedAt: new Date().toISOString(),
+      examSeed,
+      generated: generated.map((g) => g.slug),
       mutants: { total: mTotal, caught: mCaught },
       positives: { total: pTotal, green: pGreen },
       gaps: Object.fromEntries([...fixtureExam.evaluations]
@@ -712,7 +723,8 @@ export async function autoheal(argv = process.argv.slice(2)) {
         .map(([checkId, g]) => [checkId, { mutantsMissed: g.mutantsMissed, positivesLost: g.positivesLost }])),
       repoTypeDrift: fixtureExam.repoTypeDrift,
     }, null, 2));
-    if (mCaught === mTotal && pGreen === pTotal) console.log('    Fixture exam: perfect score — no gaps.');
+    examPerfect = mTotal > 0 && mCaught === mTotal && pGreen === pTotal;
+    if (examPerfect) console.log('    Fixture exam: perfect score — no gaps. The seed will rotate for the next run.');
   } else {
     console.log('\n  Phase 1.5: SKIPPED fixture exam (no repo cache dir configured)');
   }
@@ -786,6 +798,8 @@ export async function autoheal(argv = process.argv.slice(2)) {
     generatedAt: new Date().toISOString(),
     version: 2,
     incomplete,
+    examSeed,
+    examPerfect,
     coverage: Number(coverage.toFixed(3)),
     reposTested: testRepos.length,
     reposSucceeded: succeeded,
