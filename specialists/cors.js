@@ -28,7 +28,7 @@ const CORS_PATTERNS = [
   /headers\s*\(\s*\)\s*\{[^}]*access-control/i,
 ];
 
-const BACKEND_DEPS = ['express', 'fastify', 'koa', 'hono', 'elysia', 'hapi', 'sails', 'meteor', 'feathers', 'restify', 'polka', 'micro', 'connect', 'restana', '0http'];
+const BACKEND_DEPS = ['express', 'fastify', 'koa', 'hono', 'elysia', 'hapi', 'sails', 'meteor', 'feathers', 'restify', 'polka', 'micro', 'connect', 'restana', '0http', 'nitro', 'h3'];
 const CONTENT_FRAMEWORKS = ['next', 'nuxt', 'gatsby', 'astro', 'hexo', 'vuepress', 'vitepress', 'docusaurus', 'eleventy'];
 
 const EXCLUDED_PATH_RX = /(^|\/)(node_modules|\.git|\.next|out|dist|build|coverage|\.tmp|test|tests|__tests__|spec|example|examples|demo|demos|fixtures|fixture|mock|mocks|docs|playground|storybook|e2e|cypress|vitest|jest|benchmark|benchmarks|perf)\//i;
@@ -145,6 +145,41 @@ function hasServerFootprint(tree, packageJson) {
   return false;
 }
 
+function isDangerousCorsConfig(content) {
+  const proximityPatterns = [
+    /(?:origin\s*[:=]\s*['"]?\*['"]?)[\s\S]{0,500}?(?:credentials\s*[:=]\s*true|Access-Control-Allow-Credentials\s*:\s*true)/i,
+    /(?:credentials\s*[:=]\s*true|Access-Control-Allow-Credentials\s*:\s*true)[\s\S]{0,500}?(?:origin\s*[:=]\s*['"]?\*['"]?)/i,
+    /Access-Control-Allow-Origin\s*:\s*\*[\s\S]{0,500}?Access-Control-Allow-Credentials\s*:\s*true/i,
+    /Access-Control-Allow-Credentials\s*:\s*true[\s\S]{0,500}?Access-Control-Allow-Origin\s*:\s*\*/i,
+  ];
+  if (proximityPatterns.some(r => r.test(content))) return true;
+
+  for (const match of content.matchAll(/cors\s*\(\s*\{/g)) {
+    const start = match.index + match[0].length;
+    let depth = 1;
+    let idx = start;
+    while (idx < content.length && depth > 0) {
+      const ch = content[idx];
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+      idx++;
+    }
+    if (depth === 0) {
+      const block = content.slice(start, idx - 1);
+      if (/(?:credentials\s*:\s*true|credentials\s*=\s*true)/i.test(block)) {
+        const originMatch = block.match(/origin\s*[:=]\s*([^,\}\n\r]+)/i);
+        if (!originMatch) return true;
+        const val = originMatch[1].trim();
+        if (val === '*' || val === "'*'" || val === '"*"') {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 async function scanFilesForCors(tree, files) {
   const candidates = [];
 
@@ -174,12 +209,17 @@ async function scanFilesForCors(tree, files) {
   candidates.sort((a, b) => b.score - a.score);
 
   for (const { path } of candidates.slice(0, 25)) {
-    const content = await files.get(path);
-    if (!content) continue;
-    for (const pat of CORS_PATTERNS) {
-      if (pat.test(content)) {
-        return path;
+    try {
+      const content = await files.get(path);
+      if (!content) continue;
+      for (const pat of CORS_PATTERNS) {
+        if (pat.test(content)) {
+          const dangerous = isDangerousCorsConfig(content);
+          return { path, dangerous };
+        }
       }
+    } catch {
+      // ignore read errors
     }
   }
 
@@ -190,9 +230,9 @@ async function scanSubPackagesForCorsDep(tree, files) {
   const subPkgs = tree.filter(p => /(^|\/)package\.json$/.test(p) && !/(^|\/)node_modules\//.test(p));
   for (const pkgPath of subPkgs.slice(0, 15)) {
     if (pkgPath === 'package.json') continue;
-    const content = await files.get(pkgPath);
-    if (!content) continue;
     try {
+      const content = await files.get(pkgPath);
+      if (!content) continue;
       const subPkg = JSON.parse(content);
       const deps = {
         ...(subPkg.dependencies || {}),
@@ -217,25 +257,6 @@ export async function check(context) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'Empty repository', findings: [] };
     }
 
-    const rootDeps = {
-      ...(packageJson?.dependencies || {}),
-      ...(packageJson?.devDependencies || {}),
-      ...(packageJson?.peerDependencies || {}),
-    };
-    if (rootDeps.cors || rootDeps['@fastify/cors'] || rootDeps['@koa/cors'] || rootDeps['koa-cors']) {
-      return { checkId, status: 'pass', confidence: 'high', message: 'CORS dependency found in package.json', findings: [] };
-    }
-
-    const subPkgCors = await scanSubPackagesForCorsDep(tree, files);
-    if (subPkgCors) {
-      return { checkId, status: 'pass', confidence: 'high', message: `CORS dependency found in ${subPkgCors}`, findings: [{ file: subPkgCors, issue: 'cors dependency detected' }] };
-    }
-
-    const corsFile = await scanFilesForCors(tree, files);
-    if (corsFile) {
-      return { checkId, status: 'pass', confidence: 'high', message: `CORS configuration found in ${corsFile}`, findings: [{ file: corsFile, issue: 'CORS detected' }] };
-    }
-
     if (isTutorial(packageJson)) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'Tutorial or example repository — CORS not applicable', findings: [] };
     }
@@ -253,18 +274,41 @@ export async function check(context) {
     }
 
     const allDeps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
-    const hasBackendDep = BACKEND_DEPS.some(d => allDeps[d]);
-
-    const hasFullstackConfig = tree.some(p => /(^|\/)next\.config\.|(^|\/)nuxt\.config\.|(^|\/)astro\.config\.|(^|\/)gatsby-config\./.test(p));
     const hasFullstackDep = CONTENT_FRAMEWORKS.some(f => allDeps[f]);
-    const isFullstack = hasFullstackConfig || hasFullstackDep;
-
     const hasApiRoutes = tree.some(p => /\/(api|apis|rest|graphql|trpc)\/[^/]+\.(js|ts|jsx|tsx|mjs|cjs|mts|cts)$/.test(p) && !/(^|\/)node_modules\//.test(p) && !EXCLUDED_PATH_RX.test(p));
-
-    if (isFullstack && !hasApiRoutes) {
+    if (hasFullstackDep && !hasApiRoutes) {
       return { checkId, status: 'not-applicable', confidence: 'high', message: 'Fullstack framework site without API routes — CORS not needed', findings: [] };
     }
 
+    const corsResult = await scanFilesForCors(tree, files);
+    if (corsResult) {
+      if (corsResult.dangerous) {
+        return {
+          checkId,
+          status: 'fail',
+          confidence: 'high',
+          message: `Dangerous CORS misconfiguration in ${corsResult.path}: wildcard origin with credentials enabled`,
+          findings: [{ file: corsResult.path, issue: 'CORS allows wildcard origin with credentials, which is insecure' }],
+        };
+      }
+      return { checkId, status: 'pass', confidence: 'high', message: `CORS configuration found in ${corsResult.path}`, findings: [{ file: corsResult.path, issue: 'CORS detected' }] };
+    }
+
+    const rootDeps = {
+      ...(packageJson?.dependencies || {}),
+      ...(packageJson?.devDependencies || {}),
+      ...(packageJson?.peerDependencies || {}),
+    };
+    if (rootDeps.cors || rootDeps['@fastify/cors'] || rootDeps['@koa/cors'] || rootDeps['koa-cors']) {
+      return { checkId, status: 'pass', confidence: 'high', message: 'CORS dependency found in package.json', findings: [] };
+    }
+
+    const subPkgCors = await scanSubPackagesForCorsDep(tree, files);
+    if (subPkgCors) {
+      return { checkId, status: 'pass', confidence: 'high', message: `CORS dependency found in ${subPkgCors}`, findings: [{ file: subPkgCors, issue: 'cors dependency detected' }] };
+    }
+
+    const hasBackendDep = BACKEND_DEPS.some(d => allDeps[d]);
     if (hasBackendDep) {
       return { checkId, status: 'check-it', confidence: 'medium', message: 'Backend server detected without visible CORS configuration', findings: [{ file: 'unknown', issue: 'Verify CORS is configured for this API service' }] };
     }
