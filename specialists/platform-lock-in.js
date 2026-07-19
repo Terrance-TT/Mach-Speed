@@ -24,13 +24,45 @@ const REPLIT_PACKAGES = [
   { pkg: '@replit/protocol', replacement: 'Remove — internal Replit protocol' },
 ];
 
+const REPLIT_ENV_VAR_PATTERN = /\b(?:REPLIT_\w+|REPL_ID|REPL_DB_URL|REPL_IMAGE|REPL_LANGUAGE|REPL_OWNER|REPL_PUBKEYS|REPL_SLUG|REPL_URL|REPL_USERNAME)\b/;
+
+const EXCLUDED_PREFIXES = [
+  'node_modules/',
+  '.git/',
+  'dist/',
+  'build/',
+  '.next/',
+  'out/',
+  'coverage/',
+  'vendor/',
+  '.cache/',
+  '.turbo/',
+];
+
+const CODE_EXTENSIONS = /\.(?:js|jsx|ts|tsx|mjs|cjs|vue|svelte|py|rb|go|rs|java|kt|php|cs|swift|c|cpp|h|hpp|sh|bash|zsh|yaml|yml|toml)$/i;
+const SPECIAL_FILES = /(?:^|\/)(?:Dockerfile|dockerfile|\.env(?:\.|$))$/i;
+const GENERATED_OR_LOCK = /(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|composer\.lock|gemfile\.lock|cargo\.lock|podfile\.lock|packages\.lock\.json|\.min\.js|\.bundle\.js|\.map)$/i;
+
 const isFile = (p) => !p.endsWith('/');
+
+function isExcludedPath(p) {
+  const lower = p.toLowerCase();
+  for (const prefix of EXCLUDED_PREFIXES) {
+    if (lower.includes(prefix)) return true;
+  }
+  return false;
+}
+
+function looksLikeSourceFile(p) {
+  if (!isFile(p) || isExcludedPath(p) || GENERATED_OR_LOCK.test(p)) return false;
+  if (SPECIAL_FILES.test(p)) return true;
+  return CODE_EXTENSIONS.test(p);
+}
 
 export async function check(context) {
   const { tree, files, packageJson, repoType } = context;
 
   try {
-    // Empty repo — nothing to check
     if (repoType === 'empty') {
       return {
         checkId,
@@ -41,17 +73,16 @@ export async function check(context) {
       };
     }
 
-    // Step 1: Tree-level check for Replit config files (zero file reads)
     const hasReplitConfig = tree.includes('.replit') || tree.includes('replit.nix');
 
-    // Step 2: Root package.json dependencies (zero file reads — already parsed)
+    // Root package.json dependencies
     const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
     const found = [];
     for (const { pkg, replacement } of REPLIT_PACKAGES) {
       if (deps[pkg]) found.push({ pkg, replacement });
     }
 
-    // Step 3: Workspace sub-packages (up to 10 file reads)
+    // Workspace sub-packages (up to 10 file reads)
     const subPkgs = tree.filter(p => isFile(p) && /^(?:apps|packages)\/[^/]+\/package\.json$/.test(p));
     for (const subPkgPath of subPkgs.slice(0, 10)) {
       try {
@@ -62,10 +93,11 @@ export async function check(context) {
         for (const { pkg, replacement } of REPLIT_PACKAGES) {
           if (subDeps[pkg]) found.push({ pkg, replacement, inPackage: subPkgPath });
         }
-      } catch (e) { /* skip unreadable or invalid sub-package */ }
+      } catch (e) {
+        console.error(`platform-lock-in: error reading ${subPkgPath}:`, e);
+      }
     }
 
-    // Step 4: Build findings — dependency findings first, config files last
     const findings = [];
     for (const f of found) {
       findings.push({
@@ -80,7 +112,6 @@ export async function check(context) {
       findings.push({ file: 'replit.nix', issue: 'Replit nix config detected — remove after migrating dependencies to standard package management' });
     }
 
-    // Decision matrix
     if (found.length >= 1) {
       return {
         checkId,
@@ -88,6 +119,43 @@ export async function check(context) {
         confidence: 'high',
         message: `${found.length} Replit-specific dependencies found — must be replaced before migrating`,
         findings,
+      };
+    }
+
+    // Scan source files for Replit-only environment variables (up to 30 reads)
+    const sourceFiles = tree
+      .filter(looksLikeSourceFile)
+      .sort((a, b) => {
+        const depthA = a.split('/').length;
+        const depthB = b.split('/').length;
+        if (depthA !== depthB) return depthA - depthB;
+        return a.localeCompare(b);
+      })
+      .slice(0, 30);
+
+    const envFindings = [];
+    for (const filePath of sourceFiles) {
+      try {
+        const content = await files.get(filePath);
+        if (!content) continue;
+        if (REPLIT_ENV_VAR_PATTERN.test(content)) {
+          envFindings.push({
+            file: filePath,
+            issue: 'Replit-specific environment variable referenced — app may only run on Replit',
+          });
+        }
+      } catch (e) {
+        console.error(`platform-lock-in: error reading ${filePath}:`, e);
+      }
+    }
+
+    if (envFindings.length > 0) {
+      return {
+        checkId,
+        status: 'fail',
+        confidence: 'high',
+        message: `${envFindings.length} Replit-specific environment variable reference(s) found — must be decoupled before migrating`,
+        findings: envFindings,
       };
     }
 
@@ -118,7 +186,6 @@ export async function check(context) {
       message: 'No package.json — platform lock-in check not applicable',
       findings: [],
     };
-
   } catch (err) {
     console.error('platform-lock-in check error:', err);
     return {
