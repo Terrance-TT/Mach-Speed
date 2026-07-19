@@ -46,6 +46,10 @@ export const SPECIALIST_REGISTRY = {
   'node-version': ['all'],
   'database-config': [RepoType.DEPLOYABLE, RepoType.SERVER, RepoType.FRAMEWORK],
   'package-manager': ['all'],
+  'ai-api-config': [RepoType.DEPLOYABLE, RepoType.SERVER, RepoType.FRAMEWORK, RepoType.LIBRARY],
+  'object-storage': [RepoType.DEPLOYABLE, RepoType.SERVER, RepoType.FRAMEWORK],
+  'payment-config': [RepoType.DEPLOYABLE, RepoType.SERVER, RepoType.FRAMEWORK],
+  'platform-lock-in': ['all'],
 };
 
 // Scoring weights (0-10 scale, how much each check matters)
@@ -63,6 +67,10 @@ export const WEIGHTS = {
   'cors': 3,
   'static-files': 2,
   'package-manager': 1,
+  'ai-api-config': 8,
+  'object-storage': 7,
+  'payment-config': 7,
+  'platform-lock-in': 6,
 };
 
 // Validate that a specialist result follows the contract

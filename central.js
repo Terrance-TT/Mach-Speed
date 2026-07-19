@@ -17,6 +17,10 @@ import * as buildStep from './specialists/build-step.js';
 import * as staticFiles from './specialists/static-files.js';
 import * as healthCheck from './specialists/health-check.js';
 import * as secrets from './specialists/secrets.js';
+import * as aiApiConfig from './specialists/ai-api-config.js';
+import * as objectStorage from './specialists/object-storage.js';
+import * as paymentConfig from './specialists/payment-config.js';
+import * as platformLockIn from './specialists/platform-lock-in.js';
 
 export const SPECIALISTS = [
   dynamicPort,
@@ -31,6 +35,10 @@ export const SPECIALISTS = [
   staticFiles,
   healthCheck,
   secrets,
+  aiApiConfig,
+  objectStorage,
+  paymentConfig,
+  platformLockIn,
 ];
 
 // Optional GitHub token — raises the API rate limit from 60 to 5,000 req/hr.
