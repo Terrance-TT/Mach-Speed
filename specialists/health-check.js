@@ -29,6 +29,68 @@ function isExcludedPath(p) {
   return EXCLUDED_PATH_RE.test(p);
 }
 
+function stripComments(code) {
+  const lines = code.split('\n');
+  const out = [];
+  let inBlock = false;
+  for (let line of lines) {
+    if (inBlock) {
+      const end = line.indexOf('*/');
+      if (end === -1) {
+        out.push('');
+        continue;
+      }
+      line = line.slice(end + 2);
+      inBlock = false;
+    }
+    let cleaned = '';
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i];
+      const next = line[i + 1];
+      if (ch === '"' || ch === "'" || ch === '`') {
+        const quote = ch;
+        cleaned += quote;
+        i++;
+        while (i < line.length) {
+          if (line[i] === '\\') {
+            cleaned += line[i];
+            i++;
+            if (i < line.length) {
+              cleaned += line[i];
+              i++;
+            }
+          } else if (line[i] === quote) {
+            cleaned += quote;
+            i++;
+            break;
+          } else {
+            cleaned += line[i];
+            i++;
+          }
+        }
+      } else if (ch === '/' && next === '/') {
+        break;
+      } else if (ch === '/' && next === '*') {
+        inBlock = true;
+        i += 2;
+        const end = line.indexOf('*/', i);
+        if (end !== -1) {
+          i = end + 2;
+          inBlock = false;
+        } else {
+          break;
+        }
+      } else {
+        cleaned += ch;
+        i++;
+      }
+    }
+    out.push(cleaned);
+  }
+  return out.join('\n');
+}
+
 function getAllDeps(packageJson) {
   return {
     ...packageJson?.dependencies,
@@ -214,8 +276,9 @@ async function isStaticExport(tree, files) {
   ).slice(0, 3);
 
   for (const cf of configs) {
-    const content = await files.get(cf);
-    if (!content) continue;
+    const raw = await files.get(cf);
+    if (!raw) continue;
+    const content = stripComments(raw);
     if (/output\s*:\s*['"`]export['"`]/.test(content)) return true;
     if (/ssr\s*:\s*false/.test(content)) return true;
     if (/target\s*:\s*['"`]static['"`]/.test(content)) return true;
@@ -408,7 +471,6 @@ export async function check(context) {
       /export\s+(default\s+)?function\s+(health|status|ping|ready|alive)/i,
       /export\s+const\s+(health|status|ping|ready|alive)/i,
       /module\.exports\s*=.*health/i,
-      /\/\/\s*health\s*check/i,
       /health[-_]?check/i,
       /app\.get\s*\(\s*['"`]\/(api\/)?health/i,
       /app\.use\s*\(\s*['"`]\/health/i,
@@ -416,8 +478,9 @@ export async function check(context) {
     ];
 
     for (const file of serverFiles) {
-      const content = await files.get(file);
-      if (!content) continue;
+      const raw = await files.get(file);
+      if (!raw) continue;
+      const content = stripComments(raw);
       for (const pattern of HEALTH_CODE_PATTERNS) {
         if (pattern.test(content)) {
           return { checkId, status: 'pass', confidence: 'high', message: `Health endpoint found in ${file}`, findings: [{ file, issue: 'Health route or probe detected' }] };
