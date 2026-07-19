@@ -9,8 +9,6 @@ export const name = 'No Hardcoded Secrets';
 export const appliesTo = ['all'];
 
 // ── Patterns ───────────────────────────────────────────────────────────
-// Each pattern has: regex, name, captureGroup (which group to entropy-check)
-// captureGroup defaults to 1. Use 0 for full match. -1 to skip entropy.
 
 const SECRET_PATTERNS = [
   { regex: /\b(sk-[a-zA-Z0-9]{20,})/, name: 'API key (sk- prefix)' },
@@ -36,6 +34,9 @@ const SAFE_PATTERNS = [
   /XXXX/i,
   /REDACTED/i,
   /process\.env\./,
+  /import\.meta\.env\./,
+  /Deno\.env/,
+  /Bun\.env/,
 ];
 
 const SKIP_PATHS = [
@@ -43,28 +44,26 @@ const SKIP_PATHS = [
   /\.md$/, /\.test\./, /\.spec\./, /\.d\.ts$/, /\.lock$/, /\.env\./, /\.env$/, /mock/i, /snapshot/,
 ];
 
-// Bundled/vendor/generated files — contain minified/compiled code, not user secrets
-// Matches at start of path OR after a directory separator
 const VENDOR_PATHS = [
-  /(?:^|\/)node_modules\//,     // npm packages
-  /(?:^|\/)\.yarn\//,           // Yarn releases, cache, plugins
-  /(?:^|\/)\.pnpm\//,           // pnpm store
-  /(?:^|\/)vendor\//,           // vendored dependencies
-  /(?:^|\/)third_party\//,      // third-party code
-  /(?:^|\/)dist\//,             // compiled output
-  /(?:^|\/)build\//,            // build output
-  /(?:^|\/)\.next\//,           // Next.js build output
-  /(?:^|\/)\.nuxt\//,           // Nuxt build output
-  /(?:^|\/)out\//,              // static export output
-  /(?:^|\/)coverage\//,         // test coverage reports
-  /(?:^|\/)_next\//,            // Next.js static runtime
-  /(?:^|\/)\.turbo\//,          // Turbo cache
-  /(?:^|\/)\.parcel-cache\//,   // Parcel cache
-  /(?:^|\/)\.webpack\//,        // Webpack output
-  /(?:^|\/)\.cache\//,          // generic cache
-  /(?:^|\/)\.output\//,         // Nuxt/Astro output
-  /(?:^|\/)\.vercel\//,         // Vercel build cache
-  /(?:^|\/)\.netlify\//,        // Netlify build cache
+  /(?:^|\/)node_modules\//,
+  /(?:^|\/)\.yarn\//,
+  /(?:^|\/)\.pnpm\//,
+  /(?:^|\/)vendor\//,
+  /(?:^|\/)third_party\//,
+  /(?:^|\/)dist\//,
+  /(?:^|\/)build\//,
+  /(?:^|\/)\.next\//,
+  /(?:^|\/)\.nuxt\//,
+  /(?:^|\/)out\//,
+  /(?:^|\/)coverage\//,
+  /(?:^|\/)\_next\//,
+  /(?:^|\/)\.turbo\//,
+  /(?:^|\/)\.parcel-cache\//,
+  /(?:^|\/)\.webpack\//,
+  /(?:^|\/)\.cache\//,
+  /(?:^|\/)\.output\//,
+  /(?:^|\/)\.vercel\//,
+  /(?:^|\/)\.netlify\//,
 ];
 
 const SCANNABLE_EXTS = /\.(js|ts|jsx|tsx|mjs|cjs|py|rb|go|java|kt|rs)$/;
@@ -104,6 +103,70 @@ function getEntropy(str) {
   return entropy;
 }
 
+function extractQuotedStrings(line) {
+  const strings = [];
+  const re = /(['"])(.*?)\1/g;
+  let m;
+  while ((m = re.exec(line)) !== null) {
+    strings.push(m[2]);
+  }
+  return strings;
+}
+
+function checkSplitSecret(line) {
+  if (!/['"]\s*\+\s*['"]/.test(line)) return null;
+
+  const strings = extractQuotedStrings(line);
+  if (strings.length < 2) return null;
+
+  const combined = strings.join('');
+  if (combined.length < 16) return null;
+  if (combined.includes(' ')) return null;
+
+  const prefixes = ['AKIA', 'ASIA', 'ghp_', 'gho_', 'ghs_', 'ghu_', 'ghr_', 'AIza', 'npm_', 'xoxb-', 'xoxp-', 'xoxa-', 'xoxr-', 'xoxs-', 'sk_live_', 'pk_live_'];
+  for (const s of strings) {
+    for (const p of prefixes) {
+      if (s.includes(p)) return `Potential split hardcoded secret (${p})`;
+    }
+  }
+
+  if (!/[a-z]/.test(combined) || !/[A-Z]/.test(combined) || !/[0-9]/.test(combined)) return null;
+  if (getEntropy(combined) <= 3.5) return null;
+
+  const suspicious = /(?:^|[^a-zA-Z0-9])(key|token|secret|password|passwd|pwd|auth|access|credential)(?:[^a-zA-Z0-9]|$)/i;
+  if (!suspicious.test(line)) return null;
+
+  if (/https?:\/\//.test(combined) || /^\//.test(combined)) return null;
+
+  return 'Potential split hardcoded secret';
+}
+
+function checkArrayJoinSecret(line) {
+  if (!/\.\s*join\s*\(/.test(line)) return null;
+
+  const strings = extractQuotedStrings(line);
+  if (strings.length < 2) return null;
+
+  const combined = strings.join('');
+  if (combined.length < 16) return null;
+  if (combined.includes(' ')) return null;
+
+  const prefixes = ['AKIA', 'ASIA', 'ghp_', 'gho_', 'ghs_', 'ghu_', 'ghr_', 'AIza', 'npm_', 'xoxb-', 'xoxp-', 'xoxa-', 'xoxr-', 'xoxs-', 'sk_live_', 'pk_live_'];
+  for (const s of strings) {
+    for (const p of prefixes) {
+      if (s.includes(p)) return `Potential split hardcoded secret (${p})`;
+    }
+  }
+
+  if (!/[a-z]/.test(combined) || !/[A-Z]/.test(combined) || !/[0-9]/.test(combined)) return null;
+  if (getEntropy(combined) <= 3.5) return null;
+
+  const suspicious = /(?:^|[^a-zA-Z0-9])(key|token|secret|password|passwd|pwd|auth|access|credential)(?:[^a-zA-Z0-9]|$)/i;
+  if (!suspicious.test(line)) return null;
+
+  return 'Potential split hardcoded secret via array join';
+}
+
 // ── Main Check ─────────────────────────────────────────────────────────
 
 export async function check(context) {
@@ -112,7 +175,6 @@ export async function check(context) {
   try {
     const sourceFiles = tree.filter(shouldScanFile).slice(0, 30);
     if (sourceFiles.length === 0) {
-      // Empty repo or no scannable code files — this check doesn't apply
       const isEmptyRepo = tree.length === 0;
       return {
         checkId,
@@ -134,22 +196,17 @@ export async function check(context) {
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
 
-        // Skip safe lines
         if (isSafeLine(line)) continue;
-
-        // Skip comment lines
         if (isCommentLine(line)) continue;
 
-        // Test each secret pattern
+        let found = false;
+
         for (const pattern of SECRET_PATTERNS) {
           const match = line.match(pattern.regex);
           if (match) {
-            // Determine which capture group to entropy-check
             const cg = pattern.captureGroup ?? 1;
-
             let shouldFlag;
             if (cg === -1) {
-              // Entropy check bypassed (e.g., private key PEM headers)
               shouldFlag = true;
             } else {
               const candidate = match[cg] || match[0];
@@ -161,10 +218,33 @@ export async function check(context) {
                 file: filePath,
                 line: i + 1,
                 issue: `Potential ${pattern.name}`,
-                severity: 'high',
               });
+              found = true;
             }
-            break; // one finding per line
+            break;
+          }
+        }
+
+        if (!found) {
+          const splitIssue = checkSplitSecret(line);
+          if (splitIssue) {
+            findings.push({
+              file: filePath,
+              line: i + 1,
+              issue: splitIssue,
+            });
+            found = true;
+          }
+        }
+
+        if (!found) {
+          const joinIssue = checkArrayJoinSecret(line);
+          if (joinIssue) {
+            findings.push({
+              file: filePath,
+              line: i + 1,
+              issue: joinIssue,
+            });
           }
         }
       }
@@ -188,6 +268,7 @@ export async function check(context) {
       findings,
     };
   } catch (err) {
+    console.error(err);
     return {
       checkId,
       status: 'check-it',
