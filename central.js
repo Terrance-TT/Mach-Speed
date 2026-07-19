@@ -33,13 +33,22 @@ export const SPECIALISTS = [
   secrets,
 ];
 
+// Optional GitHub token — raises the API rate limit from 60 to 5,000 req/hr.
+// Set the GITHUB_TOKEN environment variable (Railway Variables / Replit Secrets).
+// Read at call time so hosting platforms that inject env vars late still work.
+function githubHeaders() {
+  const token = process.env.GITHUB_TOKEN;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export async function fetchRepoTree(owner, repo) {
-  const metaRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`);
+  const metaRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers: githubHeaders() });
   if (!metaRes.ok) throw new Error(`GitHub API error: ${metaRes.status}`);
   const meta = await metaRes.json();
   const branch = meta.default_branch;
   const treeRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`
+    `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+    { headers: githubHeaders() }
   );
   if (!treeRes.ok) throw new Error(`Tree API error: ${treeRes.status}`);
   const treeData = await treeRes.json();
@@ -52,7 +61,8 @@ export async function fetchRepoTree(owner, repo) {
 
 export async function fetchFile(owner, repo, branch, path) {
   const res = await fetch(
-    `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`
+    `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`,
+    { headers: githubHeaders() }
   );
   if (!res.ok) return null;
   return res.text();
