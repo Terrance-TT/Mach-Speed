@@ -1113,6 +1113,220 @@ const M_LOCKFILE_STALE = {
 };
 
 /* --------------------------------------------------------------------------
+ * WAVE 2B — ADVERSARIAL MUTANTS FOR THE NEWER SPECIALISTS. Each slips past a
+ * KNOWN blind spot in one of the five checks added after the original dozen:
+ * directory gates on file scans, comment-insensitive keyword detection,
+ * presence-only documentation checks, package-name-only lock-in detection.
+ * The current suite is expected to MISS all five — the loop closes them.
+ * ------------------------------------------------------------------------ */
+
+// -- ai-api-config #2: exposure in a browser-served dir the frontend scan never
+//    reads (public/), plus a COMMENTED proxy example that fakes "backend proxy" --
+const M_AI_API_PUBLIC = {
+  slug: 'mach-speed-exam/mutant-ai-api-config-public-exposure',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable whose browser-served public/widget.js instantiates new OpenAI({ apiKey: 'sk-proj-...' }) — but public/ is outside every scanned dir, and a commented-out example in lib/openai.js trips the backend-proxy regexes. ai-api-config must not wave this through.",
+  files: (() => {
+    const deps = { ...STD_DEPS, openai: '^4.52.7' };
+    const files = healthyDeployableFiles({ name: 'acme-shop-api', deps, serverJs: SERVER_HEALTHY });
+    files['public/widget.js'] = `// Support widget — served to browsers at /widget.js (OpenAI loaded via CDN).
+const openai = new OpenAI({ apiKey: 'sk-proj-z9Y8x7W6v5U4t3S2r1Q0p9O8i7U6y5T4' });
+
+async function askSupport(question) {
+  const res = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: question }],
+  });
+  return res.choices[0].message.content;
+}
+
+window.acmeSupport = { askSupport };
+`;
+    files['lib/openai.js'] = `// Server-side AI proxy — EXAMPLE ONLY, kept for reference. Not wired anywhere.
+// const OpenAI = require('openai');
+// const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// async function complete(prompt) {
+//   const res = await client.chat.completions.create({
+//     model: 'gpt-4o-mini',
+//     messages: [{ role: 'user', content: prompt }],
+//   });
+//   return res.choices[0].message.content;
+// }
+// module.exports = { complete };
+
+module.exports = null;
+`;
+    return files;
+  })(),
+  expect: { 'ai-api-config': ['fail', 'check-it'] },
+};
+
+// -- auth-config #2: hardcoded JWT secret in a dir the source scan never reads
+//    (config/), with .env.example documentation making it look configured --
+const M_AUTH_HIDDEN = {
+  slug: 'mach-speed-exam/mutant-auth-config-hidden-secret',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable whose config/auth.js signs sessions with a hardcoded jwt.sign() literal — config/ is outside every scanned dir, and .env.example dutifully documents JWT_SECRET, so the check reads 'configured'. auth-config must not wave this through.",
+  files: (() => {
+    const deps = { ...STD_DEPS, jsonwebtoken: '^9.0.2' };
+    const files = healthyDeployableFiles({ name: 'acme-shop-api', deps, serverJs: SERVER_HEALTHY });
+    files['config/auth.js'] = `const jwt = require('jsonwebtoken');
+
+function signSession(user) {
+  // Session token, valid for 30 days.
+  return jwt.sign({ userId: user.id }, 'f4d9s2a7k6h5g3d1s8a7z6x5c4v3b2n1');
+}
+
+function verifySession(token) {
+  return jwt.verify(token, 'f4d9s2a7k6h5g3d1s8a7z6x5c4v3b2n1');
+}
+
+module.exports = { signSession, verifySession };
+`;
+    files['.env.example'] = `# Copy to .env and fill in real values
+JWT_SECRET=
+`;
+    return files;
+  })(),
+  expect: { 'auth-config': ['fail', 'check-it'] },
+};
+
+// -- object-storage #2: uploads written to 'media/' (not one of the gated dir
+//    names) using plain fs — no storage package anywhere to trigger on --
+const M_OBJECT_STORAGE_MEDIA = {
+  slug: 'mach-speed-exam/mutant-object-storage-media-dir',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable whose media route writes uploads to local disk via fs.writeFile('media/' + ...) — 'media/' matches none of the gated upload-dir names, and with no storage package installed the check concludes 'no storage detected'. object-storage must not shrug this off.",
+  files: (() => {
+    const serverJs = `const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'https://app.acme-corp.io';
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json());
+app.use(express.static('public'));
+app.use(require('./routes/media'));
+
+const items = [{ id: 1, name: 'widget' }];
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/items', (req, res) => {
+  res.json({ items });
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('acme shop api listening on port ' + PORT);
+});
+`;
+    const files = healthyDeployableFiles({ name: 'acme-shop-api', serverJs });
+    files['routes/media.js'] = `const express = require('express');
+const fs = require('node:fs');
+
+const router = express.Router();
+
+router.post('/api/media', express.raw({ type: 'image/*', limit: '5mb' }), (req, res) => {
+  const fileName = Date.now() + '.bin';
+  fs.writeFile('media/' + fileName, req.body, (err) => {
+    if (err) return res.status(500).json({ error: 'save failed' });
+    res.json({ saved: fileName });
+  });
+});
+
+module.exports = router;
+`;
+    return files;
+  })(),
+  expect: { 'object-storage': ['fail', 'check-it'] },
+};
+
+// -- payment-config #2: the webhook handler exists — but entirely commented out,
+//    and keyword detection (no comment stripping) counts it as live --
+const M_PAYMENT_ZOMBIE_WEBHOOK = {
+  slug: 'mach-speed-exam/mutant-payment-config-commented-webhook',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable with a stripe dependency whose only webhook handler is commented out in api/webhooks.js — keyword detection counts the dead code as a live webhook, and .env.example completes the illusion. payment-config must notice there is no LIVE webhook.",
+  files: (() => {
+    const deps = { ...STD_DEPS, stripe: '^16.2.0' };
+    const files = healthyDeployableFiles({ name: 'acme-shop-api', deps, serverJs: SERVER_HEALTHY });
+    files['api/webhooks.js'] = `// Stripe webhook handler — DISABLED until the endpoint is registered in the dashboard.
+// const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+//
+// router.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), (req, res) => {
+//   const event = stripe.webhooks.constructEvent(
+//     req.body,
+//     req.headers['stripe-signature'],
+//     process.env.STRIPE_WEBHOOK_SECRET,
+//   );
+//   if (event.type === 'checkout.session.completed') {
+//     // fulfill the order
+//   }
+//   res.json({ received: true });
+// });
+
+module.exports = {};
+`;
+    files['.env.example'] = `# Copy to .env and fill in real values
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+`;
+    return files;
+  })(),
+  expect: { 'payment-config': ['fail', 'check-it'] },
+};
+
+// -- platform-lock-in #2: coupled to Replit-only ENVIRONMENT (REPLIT_DB_URL,
+//    REPL_ID) with zero Replit packages — package-name detection sees nothing --
+const M_PLATFORM_LOCKIN_ENV = {
+  slug: 'mach-speed-exam/mutant-platform-lock-in-env-vars',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Healthy Express deployable that reads Replit-only environment variables (REPLIT_DB_URL, REPL_ID) — no Replit packages and no .replit config, so package-name detection reports 'no lock-in', yet the app only runs on Replit. platform-lock-in must flag the environment coupling.",
+  files: healthyDeployableFiles({
+    name: 'acme-shop-api',
+    serverJs: `const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'https://app.acme-corp.io';
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json());
+app.use(express.static('public'));
+
+// Replit-provided environment — the app relies on Replit's database + repl identity.
+const dbUrl = process.env.REPLIT_DB_URL;
+const replId = process.env.REPL_ID;
+
+const items = [{ id: 1, name: 'widget' }];
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/items', (req, res) => {
+  res.json({ items, repl: replId });
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('acme shop api listening on port ' + PORT + ' db=' + dbUrl);
+});
+`,
+  }),
+  expect: { 'platform-lock-in': ['fail', 'check-it'] },
+};
+
+/* --------------------------------------------------------------------------
  * POSITIVE CONTROLS — provably-correct mini-repos; every listed check must
  * stay inside its allowed status set. Allowed sets were pinned to the
  * ACTUAL correct answer of each specialist (read line-by-line), so a
@@ -1322,8 +1536,9 @@ export function tally<T>(values: T[]): Map<T, number> {
 };
 
 /* --------------------------------------------------------------------------
- * The full fixture set: 12 wave-1 mutants (one per original check) + 5 mutants
- * for the newer specialists + 7 wave-2 adversarial mutants + 3 controls = 27.
+ * The full fixture set: 12 wave-1 mutants (one per original check) + 5 wave-1
+ * mutants for the newer specialists + 12 wave-2 adversarial mutants (7 for the
+ * original checks + 5 for the newer ones) + 3 controls = 32 fixtures.
  * ------------------------------------------------------------------------ */
 
 export const FIXTURES = [
@@ -1354,6 +1569,12 @@ export const FIXTURES = [
   M_HOST_BINDING_PRIVATE_IP,
   M_STATIC_FILES_WRONG_DIR,
   M_LOCKFILE_STALE,
+  // Adversarial mutants for the newer specialists (wave 2b)
+  M_AI_API_PUBLIC,
+  M_AUTH_HIDDEN,
+  M_OBJECT_STORAGE_MEDIA,
+  M_PAYMENT_ZOMBIE_WEBHOOK,
+  M_PLATFORM_LOCKIN_ENV,
   // Positive controls
   C_PERFECT_DEPLOYABLE,
   C_PERFECT_TOOL,
