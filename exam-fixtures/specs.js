@@ -639,6 +639,307 @@ module.exports = {
 };
 
 /* --------------------------------------------------------------------------
+ * WAVE 2 — ADVERSARIAL MUTANTS. Each is engineered to slip past a KNOWN blind
+ * spot in current detection logic (presence-only checks, filename gates,
+ * comment-insensitive regexes, entropy thresholds, presence-only lockfiles).
+ * They measure detection QUALITY, not detection PRESENCE. Several are missed
+ * by the current suite on purpose — the self-heal loop is expected to close
+ * them; the gate requires any rewrite of that check to catch ALL its mutants.
+ * ------------------------------------------------------------------------ */
+
+// -- cors #2: cors IS configured — but wide open (origin '*' + credentials) --
+const M_CORS_WIDE_OPEN = {
+  slug: 'mach-speed-exam/mutant-cors-wide-open',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express API whose CORS is configured but dangerously wide open: origin '*' together with credentials: true. A presence-only check passes it — a correct specialist must flag the misconfiguration.",
+  files: healthyDeployableFiles({
+    name: 'acme-shop-api',
+    serverJs: `const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+app.use(cors({ origin: '*', credentials: true }));
+app.use(express.json());
+app.use(express.static('public'));
+
+const items = [{ id: 1, name: 'widget' }];
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/items', (req, res) => {
+  res.json({ items });
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('acme shop api listening on port ' + PORT);
+});
+`,
+  }),
+  expect: { cors: ['fail', 'check-it'] },
+};
+
+// -- secrets #2: credentials split into short low-entropy concatenated parts --
+// (every quoted fragment is <=8 chars, so literal-length and entropy scans miss it)
+const M_SECRETS_SPLIT = {
+  slug: 'mach-speed-exam/mutant-secrets-split-key',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Healthy Express deployable plus config.js whose AWS-style credentials are split into short concatenated string fragments — each fragment evades length/entropy scanning, but the assembled key is still hardcoded. secrets must flag it.",
+  files: (() => {
+    const files = healthyDeployableFiles({
+      name: 'acme-shop-api',
+      serverJs: `const express = require('express');
+const cors = require('cors');
+const inventory = require('./config');
+
+const app = express();
+
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'https://app.acme-corp.io';
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json());
+app.use(express.static('public'));
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/inventory', async (req, res) => {
+  const res2 = await fetch(inventory.baseUrl + '/v1/stock', {
+    headers: { 'x-api-key': inventory.apiKey },
+  });
+  res.json(await res2.json());
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('acme shop api listening on port ' + PORT);
+});
+`,
+    });
+    files['config.js'] = `// Credentials for the inventory sync integration.
+// Split into pieces "for safety" — still hardcoded credentials.
+const apiKey = 'AKIA2Q3J' + '4H7G9F1D' + '3S5A7Z22';
+const secret = 'k7mN2pQ9' + 'rS4tV8wX' + '1yZ3bC6d' + 'F0gH5jL8' + 'aS2dF4g7';
+
+module.exports = {
+  apiKey,
+  secret,
+  baseUrl: 'https://inventory.acme-corp.io',
+};
+`;
+    return files;
+  })(),
+  expect: { secrets: ['fail', 'check-it'] },
+};
+
+// -- database-config #2: hardcoded conn string in a file whose NAME says nothing --
+// (lib/store.js matches no db/database filename gate, so it is never even scanned)
+const M_DB_CONFIG_HIDDEN = {
+  slug: 'mach-speed-exam/mutant-database-config-hidden',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable with a pg Pool whose connection string (with credentials) is hardcoded in lib/store.js — a file whose name matches no database filename gate, so it is never scanned. database-config must find it and FAIL it (a shrug is not detection).",
+  files: (() => {
+    const deps = { ...STD_DEPS, pg: '^8.12.0' };
+    const files = healthyDeployableFiles({
+      name: 'acme-shop-api',
+      deps,
+      serverJs: `const express = require('express');
+const cors = require('cors');
+const { listItems } = require('./lib/store');
+
+const app = express();
+
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'https://app.acme-corp.io';
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json());
+app.use(express.static('public'));
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/items', async (req, res) => {
+  const items = await listItems();
+  res.json({ items });
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('acme shop api listening on port ' + PORT);
+});
+`,
+    });
+    files['lib/store.js'] = `const { Pool } = require('pg');
+
+const pool = new Pool({
+  connectionString: 'postgres://postgres:postgres@db.internal.acme:5432/shopdb',
+});
+
+async function listItems() {
+  const { rows } = await pool.query('SELECT id, name FROM items ORDER BY id');
+  return rows;
+}
+
+module.exports = { pool, listItems };
+`;
+    return files;
+  })(),
+  expect: { 'database-config': ['fail'] },
+};
+
+// -- health-check #2: the /health route exists — but commented out --
+// (content regexes do not strip comments, so the dead route still "detects")
+const M_HEALTH_CHECK_ZOMBIE = {
+  slug: 'mach-speed-exam/mutant-health-check-commented',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable whose only /health route is commented out — regexes that do not strip comments still 'find' it. A correct specialist must notice there is no LIVE health endpoint and flag it.",
+  files: healthyDeployableFiles({
+    name: 'acme-shop-api',
+    serverJs: `const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'https://app.acme-corp.io';
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json());
+app.use(express.static('public'));
+
+const items = [{ id: 1, name: 'widget' }];
+
+// TODO: re-enable once the load balancer is configured
+// app.get('/health', (req, res) => {
+//   res.json({ ok: true });
+// });
+
+app.get('/api/items', (req, res) => {
+  res.json({ items });
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('acme shop api listening on port ' + PORT);
+});
+`,
+  }),
+  expect: { 'health-check': ['fail', 'check-it'] },
+};
+
+// -- host-binding #2: binds to a hardcoded PRIVATE interface IP (not localhost) --
+// (only '127.0.0.1'/'localhost' literals are treated as bad — any other literal
+//  host falls through to 'listens without explicit host' => pass)
+const M_HOST_BINDING_PRIVATE_IP = {
+  slug: 'mach-speed-exam/mutant-host-binding-private-ip',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable binding to a hardcoded private interface IP (10.0.0.5) — not localhost, but not all-interfaces either; unreachable once the container IP changes. host-binding must flag it.",
+  files: healthyDeployableFiles({
+    name: 'acme-shop-api',
+    serverJs: `const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'https://app.acme-corp.io';
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json());
+app.use(express.static('public'));
+
+const items = [{ id: 1, name: 'widget' }];
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/items', (req, res) => {
+  res.json({ items });
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '10.0.0.5', () => {
+  console.log('acme shop api listening on 10.0.0.5:' + PORT);
+});
+`,
+  }),
+  expect: { 'host-binding': ['fail', 'check-it'] },
+};
+
+// -- static-files #2: express.static mounts the WRONG directory --
+// (presence of express + an express.static call passes, even though 'assets'
+//  does not exist and the real assets in public/ are never served)
+const M_STATIC_FILES_WRONG_DIR = {
+  slug: 'mach-speed-exam/mutant-static-files-wrong-dir',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable that calls express.static('assets') — but the assets directory does not exist; the real static files live in public/ and are never served. static-files must flag the broken serving.",
+  files: (() => {
+    const deps = { ...STD_DEPS };
+    return {
+      'package.json': appPkg({ name: 'acme-shop-api', scripts: STD_SCRIPTS, deps }),
+      'server.js': `const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'https://app.acme-corp.io';
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json());
+app.use('/static', express.static('assets'));
+
+const items = [{ id: 1, name: 'widget' }];
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/items', (req, res) => {
+  res.json({ items });
+});
+
+const PORT = process.env.PORT;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('acme shop api listening on port ' + PORT);
+});
+`,
+      'public/index.html': PUBLIC_INDEX_HTML,
+      'public/app.css': 'body { font-family: system-ui, sans-serif; margin: 2rem; }\nh1 { color: #1a4f8a; }\n',
+      Dockerfile: DOCKERFILE_NODE,
+      'package-lock.json': npmLock('acme-shop-api', '1.4.2', deps, { esbuild: '^0.21.5' }),
+    };
+  })(),
+  expect: { 'static-files': ['fail', 'check-it'] },
+};
+
+// -- lockfile #2: lockfile exists but is STALE (package.json declares pg,
+//    the lockfile does not — npm ci would fail outright) --
+const M_LOCKFILE_STALE = {
+  slug: 'mach-speed-exam/mutant-lockfile-stale',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Express deployable whose package.json declares pg, but the package-lock.json predates it (pg is missing) — npm ci fails on mismatched lockfiles. A presence-only check passes it; lockfile must flag the stale lockfile.",
+  files: (() => {
+    const depsWithPg = { ...STD_DEPS, pg: '^8.12.0' };
+    const files = {
+      'package.json': appPkg({ name: 'acme-shop-api', scripts: STD_SCRIPTS, deps: depsWithPg }),
+      'server.js': SERVER_HEALTHY,
+      'public/index.html': PUBLIC_INDEX_HTML,
+      Dockerfile: DOCKERFILE_NODE,
+      // NOTE: lockfile deliberately built WITHOUT pg — it is stale vs package.json.
+      'package-lock.json': npmLock('acme-shop-api', '1.4.2', STD_DEPS, { esbuild: '^0.21.5' }),
+    };
+    return files;
+  })(),
+  expect: { lockfile: ['fail', 'check-it'] },
+};
+
+/* --------------------------------------------------------------------------
  * POSITIVE CONTROLS — provably-correct mini-repos; every listed check must
  * stay inside its allowed status set. Allowed sets were pinned to the
  * ACTUAL correct answer of each specialist (read line-by-line), so a
@@ -837,7 +1138,7 @@ export function tally<T>(values: T[]): Map<T, number> {
  * ------------------------------------------------------------------------ */
 
 export const FIXTURES = [
-  // Mutants, one per check
+  // Mutants, one per check (wave 1)
   M_DYNAMIC_PORT,
   M_HOST_BINDING,
   M_START_SCRIPT,
@@ -850,6 +1151,14 @@ export const FIXTURES = [
   M_DATABASE_CONFIG,
   M_LOCKFILE,
   M_SECRETS,
+  // Adversarial mutants (wave 2 — aimed at known blind spots)
+  M_CORS_WIDE_OPEN,
+  M_SECRETS_SPLIT,
+  M_DB_CONFIG_HIDDEN,
+  M_HEALTH_CHECK_ZOMBIE,
+  M_HOST_BINDING_PRIVATE_IP,
+  M_STATIC_FILES_WRONG_DIR,
+  M_LOCKFILE_STALE,
   // Positive controls
   C_PERFECT_DEPLOYABLE,
   C_PERFECT_TOOL,

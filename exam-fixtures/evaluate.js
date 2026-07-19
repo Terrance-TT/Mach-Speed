@@ -79,19 +79,24 @@ export function evaluateFixtureRows(rows, manifest) {
 }
 
 /**
- * The gate rule (ratchet philosophy — never get worse):
+ * The gate rule:
  *
- * fixtureVerdict(baseMap, postMap, { positivesMode = 'absolute' | 'ratchet' })
+ * fixtureVerdict(baseMap, postMap, { positivesMode, mutantsMode })
  *   -> { ok: boolean, reasons: [string] }
  *
- * - mutants: for every checkId, post.mutantsCaught >= base.mutantsCaught, else reason:
- *   "fixture mutants: caught X -> Y mutants (detection got weaker)"
+ * - mutants 'ratchet' (default): for every checkId, post.mutantsCaught >= base.mutantsCaught,
+ *   else reason: "caught X -> Y mutants (detection got weaker)"
+ * - mutants 'absolute': post must catch EVERY mutant (zero missed), else reason.
+ *   Use once the exam is trusted — a rewrite may not leave any mutant uncaught.
  * - positives 'absolute': post must be 100% green (any positivesLost entry -> reason)
  * - positives 'ratchet':  only NEWLY lost vs base -> reason
  */
-export function fixtureVerdict(baseMap, postMap, { positivesMode = 'absolute' } = {}) {
+export function fixtureVerdict(baseMap, postMap, { positivesMode = 'absolute', mutantsMode = 'ratchet' } = {}) {
   if (positivesMode !== 'absolute' && positivesMode !== 'ratchet') {
     throw new Error(`positivesMode must be 'absolute' or 'ratchet', got "${positivesMode}"`);
+  }
+  if (mutantsMode !== 'absolute' && mutantsMode !== 'ratchet') {
+    throw new Error(`mutantsMode must be 'absolute' or 'ratchet', got "${mutantsMode}"`);
   }
   const reasons = [];
   const checkIds = new Set([...(baseMap ? baseMap.keys() : []), ...(postMap ? postMap.keys() : [])]);
@@ -100,8 +105,15 @@ export function fixtureVerdict(baseMap, postMap, { positivesMode = 'absolute' } 
     const base = (baseMap && baseMap.get(checkId)) || emptyBucket();
     const post = (postMap && postMap.get(checkId)) || emptyBucket();
 
-    // Mutants: detection must never get weaker.
-    if (post.mutantsCaught < base.mutantsCaught) {
+    // Mutants.
+    if (mutantsMode === 'absolute') {
+      const missed = post.mutantsTotal - post.mutantsCaught;
+      if (missed > 0) {
+        reasons.push(
+          `fixture mutants: ${checkId} still misses ${missed}/${post.mutantsTotal} mutant(s): ${post.mutantsMissed.map((m) => `${m.slug} (${m.status})`).join(', ')}`,
+        );
+      }
+    } else if (post.mutantsCaught < base.mutantsCaught) {
       reasons.push(
         `fixture mutants: ${checkId} caught ${base.mutantsCaught} -> ${post.mutantsCaught} mutants (detection got weaker)`,
       );
