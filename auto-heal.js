@@ -26,6 +26,8 @@
 import { RepoType, SPECIALIST_REGISTRY } from './contract.js';
 import { analyzeRepo } from './central.js';
 import { prefetchRepos, createCachedFetch, pool, REPO_CACHE_ENV } from './repo-cache.js';
+import { buildFixtures } from './exam-fixtures/build.js';
+import { evaluateFixtureRows } from './exam-fixtures/evaluate.js';
 import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -538,7 +540,54 @@ export function generateEvidence(checkId, patterns, allResults, repoTypeMap, tes
   return md.join('\n');
 }
 
-// ── Main execution ──
+// ── Fixture exam (mutation testing + positive controls) ──
+// Synthetic mini-repos served from the local snapshot cache — fully offline.
+// Mutants carry one known injected fault the specialist MUST flag; positive
+// controls are provably correct and must NOT be flagged. Gaps become part of
+// the evidence so the AI sees exactly what it missed.
+export async function runFixtureExam(cacheDir, { concurrency = ANALYSIS_CONCURRENCY, timeoutMs = REPO_TIMEOUT_MS } = {}) {
+  const manifest = await buildFixtures(cacheDir);
+  const rows = [];
+  const repoTypeDrift = [];
+  await pool(manifest, concurrency, async (f) => {
+    try {
+      const result = await withTimeout(analyzeRepo(f.owner, f.repo), timeoutMs, f.slug);
+      if (result.repoType !== f.expectedType) {
+        repoTypeDrift.push({ slug: f.slug, expected: f.expectedType, actual: result.repoType });
+      }
+      for (const check of result.scorecard.checks) {
+        rows.push({
+          owner: f.owner, repo: f.repo, checkId: check.id,
+          status: check.status, confidence: check.confidence || 'unknown',
+          message: check.message || '', findings: check.findings || [],
+        });
+      }
+    } catch (err) {
+      repoTypeDrift.push({ slug: f.slug, expected: f.expectedType, actual: `ERROR: ${err.message}` });
+    }
+  });
+  return { manifest, rows, evaluations: evaluateFixtureRows(rows, manifest), repoTypeDrift };
+}
+
+// Plain-English fixture section appended to a specialist's evidence file.
+export function buildFixtureEvidenceSection(checkId, gap) {
+  const lines = ['', '---', '', '## Fixture exam (mutation testing + positive controls)', ''];
+  for (const m of gap.mutantsMissed) {
+    lines.push(
+      `- ❌ MISSED MUTANT \`${m.slug}\`: this exam repo has a deliberately injected fault — ${m.note}.`,
+      `  You returned \`${m.status}\`. A correct specialist MUST flag this (fail or check-it).`
+    );
+  }
+  for (const l of gap.positivesLost) {
+    lines.push(
+      `- ❌ FALSE POSITIVE on \`${l.slug}\`: this exam repo is provably correct — ${l.note}.`,
+      `  You returned \`${l.status}\`. A correct specialist must pass it (or bow out with not-applicable where legitimate).`
+    );
+  }
+  lines.push('', 'These fixture failures are exam requirements: your rewrite must catch the mutants AND keep the controls green.', '');
+  return lines.join('\n');
+}
+
 export async function autoheal(argv = process.argv.slice(2)) {
   const args = argv;
   const outputDir = args.includes('--output') ? args[args.indexOf('--output') + 1] : './evidence';
@@ -634,6 +683,40 @@ export async function autoheal(argv = process.argv.slice(2)) {
   // Wait a tick for any async cleanup
   await sleep(100);
 
+  // ── Phase 1.5: fixture exam — mutants (must flag) + positive controls (must pass).
+  // Fully offline: fixtures are local snapshots in the same cache as the real repos.
+  // Gaps fold into evidence + severity in Phase 2 so the loop works on them.
+  let fixtureExam = null;
+  if (process.env[REPO_CACHE_ENV]) {
+    console.log('\n  Phase 1.5: fixture exam (mutants + positive controls, offline)...');
+    fixtureExam = await runFixtureExam(path.resolve(process.env[REPO_CACHE_ENV]));
+    let mTotal = 0, mCaught = 0, pTotal = 0, pGreen = 0;
+    for (const [, g] of fixtureExam.evaluations) {
+      mTotal += g.mutantsTotal; mCaught += g.mutantsCaught;
+      pTotal += g.positivesTotal; pGreen += g.positivesGreen;
+    }
+    console.log(`    Mutants: ${mCaught}/${mTotal} caught · Positive controls: ${pGreen}/${pTotal} green`);
+    for (const [checkId, g] of fixtureExam.evaluations) {
+      for (const m of g.mutantsMissed) console.log(`    ❌ [${checkId}] missed mutant ${m.slug} (returned ${m.status})`);
+      for (const l of g.positivesLost) console.log(`    ❌ [${checkId}] false positive on ${l.slug} (returned ${l.status})`);
+    }
+    if (fixtureExam.repoTypeDrift.length) {
+      console.log(`    ⚠️  fixture repoType drift: ${fixtureExam.repoTypeDrift.map(d => `${d.slug} (${d.expected}→${d.actual})`).join(', ')}`);
+    }
+    fs.writeFileSync(path.join(outputDir, 'fixtures.json'), JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      mutants: { total: mTotal, caught: mCaught },
+      positives: { total: pTotal, green: pGreen },
+      gaps: Object.fromEntries([...fixtureExam.evaluations]
+        .filter(([, g]) => g.mutantsMissed.length || g.positivesLost.length)
+        .map(([checkId, g]) => [checkId, { mutantsMissed: g.mutantsMissed, positivesLost: g.positivesLost }])),
+      repoTypeDrift: fixtureExam.repoTypeDrift,
+    }, null, 2));
+    if (mCaught === mTotal && pGreen === pTotal) console.log('    Fixture exam: perfect score — no gaps.');
+  } else {
+    console.log('\n  Phase 1.5: SKIPPED fixture exam (no repo cache dir configured)');
+  }
+
   const succeeded = Object.keys(repoTypeMap).length;
   const coverage = testRepos.length ? succeeded / testRepos.length : 0;
   const incomplete = coverage < MIN_REPO_COVERAGE;
@@ -657,7 +740,17 @@ export async function autoheal(argv = process.argv.slice(2)) {
     const resultCount = allResults.filter(r => r.checkId === checkId).length;
     const insufficient = resultCount < MIN_SPECIALIST_RESULTS;
     const patterns = insufficient ? [] : detectPatterns(checkId, allResults, repoTypeMap, testRepos);
-    const evidence = generateEvidence(checkId, patterns, allResults, repoTypeMap, testRepos);
+    let evidence = generateEvidence(checkId, patterns, allResults, repoTypeMap, testRepos);
+
+    // Fixture exam gaps: append to the evidence the AI reads, and count toward
+    // severity so auto-fix picks this specialist up even when real repos look clean.
+    const fixtureGap = fixtureExam ? fixtureExam.evaluations.get(checkId) : null;
+    const fixtureNotes = [];
+    if (fixtureGap && (fixtureGap.mutantsMissed.length || fixtureGap.positivesLost.length)) {
+      evidence += buildFixtureEvidenceSection(checkId, fixtureGap);
+      if (fixtureGap.mutantsMissed.length) fixtureNotes.push('fixture-mutant-missed');
+      if (fixtureGap.positivesLost.length) fixtureNotes.push('fixture-positive-lost');
+    }
 
     const filepath = path.join(outputDir, `${checkId}.md`);
     fs.writeFileSync(filepath, evidence);
@@ -665,13 +758,13 @@ export async function autoheal(argv = process.argv.slice(2)) {
     const severityScore = patterns.reduce((sum, p) => {
       const weights = { critical: 4, high: 3, medium: 2, low: 1 };
       return sum + (weights[p.severity] || 1);
-    }, 0);
+    }, 0) + fixtureNotes.length * 3;
 
     specialistReports.push({
       checkId,
-      patternCount: patterns.length,
+      patternCount: patterns.length + fixtureNotes.length,
       severityScore,
-      patterns: patterns.map(p => p.id),
+      patterns: [...patterns.map(p => p.id), ...fixtureNotes],
       resultCount,
       insufficientData: insufficient,
       filepath,
