@@ -3,10 +3,11 @@ export const name = 'Static Files Served';
 export const appliesTo = ['deployable', 'server', 'framework'];
 
 const STATIC_SERVING_DEPS = [
-  'serve-static', 'express', 'connect', 'polka', 'fastify', 'koa', 'restify', 'hapi', 'hono',
-  'sirv', 'http-server', 'live-server', 'serve-handler', 'koa-static', 'fastify-static', '@fastify/static',
-  'hono-static', 'connect-static', 'serve', 'light-server', 'servor', 'httpolyglot', 'local-web-server',
-  'sirv-cli', 'webpack-dev-server', 'vite', 'parcel', 'http-serve', 'superstatic', 'ngrok'
+  'serve-static', 'sirv', 'http-server', 'live-server', 'serve-handler',
+  'koa-static', 'fastify-static', '@fastify/static', 'hono-static',
+  'connect-static', 'serve', 'light-server', 'servor', 'httpolyglot',
+  'local-web-server', 'sirv-cli', 'webpack-dev-server', 'vite', 'parcel',
+  'http-serve', 'superstatic'
 ];
 
 const FRAMEWORKS_WITH_BUILTIN_STATIC = [
@@ -46,6 +47,7 @@ const STATIC_SCRIPT_PATTERNS = [
 
 const CODE_PATTERNS = [
   /express\.static\s*\(/,
+  /(?:from|require)\s*\(\s*['"]serve-static['"]\s*\)/,
   /serve-static/,
   /serve-handler/,
   /sirv\s*\(/,
@@ -56,6 +58,7 @@ const CODE_PATTERNS = [
   /hono-static/,
   /connect-static/,
   /app\.use\s*\(\s*['"]\/(public|static|assets)/,
+  /router\.use\s*\(\s*['"]\/(public|static|assets)/,
   /mount\s*\(\s*['"]\/(public|static|assets)/,
   /serve\s*\(\s*['"]\.\/public/,
   /vite\s+preview/,
@@ -63,7 +66,6 @@ const CODE_PATTERNS = [
   /http-server/,
   /live-server/,
   /file_server/,
-  /root\s+\*/,
   /nginx.*root\s+/,
   /assets\s*=\s*\{/,
   /site\s*=\s*\{.*bucket/,
@@ -71,15 +73,18 @@ const CODE_PATTERNS = [
   /fastify\.register\s*\(\s*.*static/,
   /app\.register\s*\(\s*.*static/,
   /server\.route\s*\(\s*\{.*path\s*:\s*['"]\/(public|static|assets)/,
-  /app\.use\s*\(\s*['"]\/(public|static|assets)/,
-  /router\.use\s*\(\s*['"]\/(public|static|assets)/,
-  /Bun\.serve\s*\(\s*\{[^}]*static/,
-  /Deno\.serve\s*\(/,
-  /serveDir/,
-  /serveStatic/,
-  /serveFile/,
+  /Bun\.serve\s*\(\s*\{[^}]*static/i,
+  /serveDir\s*\(/,
+  /serveStatic\s*\(/,
+  /serveFile\s*\(/,
   /import\s+.*from\s+['"][^'"]*\/file_server\.ts['"]/,
-  /const\s+app\s*=\s*new\s+Hono/
+  /res\.sendFile\s*\(/,
+  /res\.sendfile\s*\(/,
+  /sendFile\s*\(\s*.*(?:public|static|assets)/,
+  /createReadStream\s*\(\s*.*(?:public|static|assets)/,
+  /send_from_directory\s*\(/,
+  /app\.send_static_file/,
+  /http\.StripPrefix\s*\(\s*['"]\/(?:public|static|assets)/
 ];
 
 const FRAMEWORK_CONFIG_PATTERNS = [
@@ -155,7 +160,7 @@ export async function check(context) {
     }
 
     const subPkgPaths = tree
-      .filter(p => p !== 'package.json' && p.endsWith('package.json') && !p.includes('/node_modules/'))
+      .filter(p => p !== 'package.json' && p.endsWith('/package.json') && !p.includes('/node_modules/'))
       .slice(0, 15);
 
     if (subPkgPaths.length > 0) {
@@ -219,24 +224,43 @@ export async function check(context) {
       }
     }
 
+    const entryFiles = new Set();
+    if (packageJson) {
+      if (packageJson.main && typeof packageJson.main === 'string') {
+        entryFiles.add(packageJson.main.replace(/^\.\//, ''));
+      }
+      if (packageJson.bin) {
+        const bins = typeof packageJson.bin === 'string' ? [packageJson.bin] : Object.values(packageJson.bin);
+        for (const b of bins) {
+          if (b && typeof b === 'string') entryFiles.add(b.replace(/^\.\//, ''));
+        }
+      }
+    }
+
     const sourceFiles = tree.filter(p => {
       const basename = p.split('/').pop() || '';
+      const hasCodeExt = /\.(js|ts|mjs|cjs|jsx|tsx)$/.test(p);
+      const isBinScript = !basename.includes('.') && /\/bin\//.test(p);
       return (
-        /\.(js|ts|mjs|cjs|go|py|rs|java|php)$/.test(p) &&
+        (hasCodeExt || isBinScript) &&
         !/(test|spec|example|\.d\.ts|stories|fixture)/i.test(basename) &&
         !/(node_modules|\.next|dist|build|coverage|vendor)\//.test(p) &&
-        /\b(server|app|index|main|middleware|router|handler|route|static|config|www|cli|worker|bin|entry|start)\b/i.test(basename)
+        /\b(server|app|index|main|middleware|router|handler|route|static|config|www|cli|worker|bin|entry|start|setup|bootstrap|listen|factory|web|http|api|service|init|gateway|proxy|daemon|serve)\b/i.test(basename)
       );
     });
 
-    const priority = /(static|middleware|server|config|Dockerfile|nginx|Caddyfile|worker|app)/i;
+    const priority = /(server|app|index|main|middleware|router|handler|route|static|config|www|cli|worker|bin|entry|start|setup|bootstrap|listen|factory|web|http|api|service|init|gateway|proxy|daemon|serve)/i;
     sourceFiles.sort((a, b) => {
-      const aScore = priority.test(a) ? 2 : 1;
-      const bScore = priority.test(b) ? 2 : 1;
-      return bScore - aScore;
+      const aBase = a.split('/').pop() || '';
+      const bBase = b.split('/').pop() || '';
+      const aEntry = entryFiles.has(a) || entryFiles.has(aBase) ? 4 : 0;
+      const bEntry = entryFiles.has(b) || entryFiles.has(bBase) ? 4 : 0;
+      const aNamed = priority.test(a) ? 2 : 0;
+      const bNamed = priority.test(b) ? 2 : 0;
+      return (bEntry + bNamed) - (aEntry + aNamed);
     });
 
-    for (const filePath of sourceFiles.slice(0, 10)) {
+    for (const filePath of sourceFiles.slice(0, 20)) {
       try {
         const content = await files.get(filePath);
         if (!content) continue;
