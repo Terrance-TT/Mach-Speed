@@ -303,12 +303,16 @@ export function decideMerge({ lintHits, trainBase, trainPost, holdBase, holdPost
   const reasons = [];
   if (lintHits.length) reasons.push(`anti-gaming lint: ${lintHits.join('; ')}`);
 
+  // Catching MORE fixture mutants than baseline also counts as improvement —
+  // a rewrite whose only benefit is sharper detection must not be auto-rejected
+  // for "no measurable improvement" (harm checks below still apply in full).
   const improved =
     trainPost.severity < trainBase.severity ||
     (trainPost.checkItRate !== null && trainBase.checkItRate !== null &&
      trainPost.checkItRate <= trainBase.checkItRate - CHECKIT_IMPROVEMENT_MARGIN &&
      trainPost.avgScore !== null && trainBase.avgScore !== null &&
-     trainPost.avgScore > trainBase.avgScore);
+     trainPost.avgScore > trainBase.avgScore) ||
+    (fixtures && fixtures.mutantsGained === true);
   if (!improved) {
     reasons.push(
       `no measurable improvement (severity ${trainBase.severity} -> ${trainPost.severity}, ` +
@@ -660,12 +664,18 @@ export async function autoverify(argv = process.argv.slice(2)) {
             crashes: newCrashes(baseRows, [...postRows.train.rows, ...postRows.hold.rows], checkId),
           };
           // Fixture gate (per candidate): mutants caught must not drop vs baseline;
-          // positive controls must stay 100% green (absolute mode).
+          // positive controls must stay 100% green (absolute mode). Catching MORE
+          // mutants than baseline counts as a merge-worthy improvement (see decideMerge).
+          const baseCaught = fixBaseMap?.get(checkId)?.mutantsCaught ?? 0;
+          const postCaught = fixPostMap?.get(checkId)?.mutantsCaught ?? 0;
           const fixtureGate = (fixBaseMap && fixPostMap)
-            ? fixtureVerdict(
-                new Map([[checkId, fixBaseMap.get(checkId)]]),
-                new Map([[checkId, fixPostMap.get(checkId)]]),
-                { positivesMode: 'absolute' })
+            ? {
+                ...fixtureVerdict(
+                  new Map([[checkId, fixBaseMap.get(checkId)]]),
+                  new Map([[checkId, fixPostMap.get(checkId)]]),
+                  { positivesMode: 'absolute' }),
+                mutantsGained: postCaught > baseCaught,
+              }
             : null;
           const decision = decideMerge({ lintHits: s.lintHits, ...metrics, fixtures: fixtureGate });
           const fixtureDetail = fixPostMap ? fixPostMap.get(checkId) : null;
