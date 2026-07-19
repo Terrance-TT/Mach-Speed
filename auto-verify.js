@@ -48,10 +48,13 @@ import { pathToFileURL } from 'url';
 import { installFetchMiddleware, detectPatterns, TEST_REPOS } from './auto-heal.js';
 import { prefetchRepos, pool, REPO_CACHE_ENV } from './repo-cache.js';
 import { buildFixtures, fixtureSlugs, FIXTURE_OWNER } from './exam-fixtures/build.js';
+import { FIXTURES } from './exam-fixtures/specs.js';
+import { resolveExamSeed, generateFixtures, EXAM_SEED_PATH } from './exam-fixtures/generate.js';
 import { evaluateFixtureRows, fixtureVerdict } from './exam-fixtures/evaluate.js';
 import {
   Moonshot, ThreadStore, GitHubApi, SYSTEM_PROMPT, STATE_BRANCH,
   extractModule, validateModuleSource, validateModuleRuntime,
+  buildSpecialistFileMap, specialistFileFor,
 } from './auto-fix.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -384,25 +387,26 @@ function buildFeedbackMessage(checkId, reasons, metrics) {
 }
 
 // ── Apply / restore candidate files ──
-function applyCandidates(repoRoot, candidates) {
-  const backups = new Map();
+function applyCandidates(repoRoot, candidates, specFileMap) {
+  const backups = new Map(); // relPath -> original code (filenames may differ from checkIds)
   for (const [checkId, code] of Object.entries(candidates)) {
-    const p = path.join(repoRoot, 'specialists', `${checkId}.js`);
-    if (!fs.existsSync(p)) throw new Error(`specialists/${checkId}.js not found`);
-    backups.set(checkId, fs.readFileSync(p, 'utf8'));
+    const rel = specialistFileFor(specFileMap, checkId);
+    const p = path.join(repoRoot, rel);
+    if (!fs.existsSync(p)) throw new Error(`${rel} not found for ${checkId}`);
+    backups.set(rel, fs.readFileSync(p, 'utf8'));
     fs.writeFileSync(p, code);
   }
   return backups;
 }
 
 function restoreCandidates(repoRoot, backups) {
-  for (const [checkId, code] of backups) {
-    fs.writeFileSync(path.join(repoRoot, 'specialists', `${checkId}.js`), code);
+  for (const [rel, code] of backups) {
+    fs.writeFileSync(path.join(repoRoot, rel), code);
   }
 }
 
 // ── Merge one verified winner (PR for audit trail -> squash merge -> delete branch) ──
-async function mergeWinner(gh, checkId, code, scoreComment) {
+async function mergeWinner(gh, checkId, code, scoreComment, specFileMap) {
   const branch = `auto-fix/${checkId}`;
   const baseSha = await gh.defaultBranchSha();
   // Reusing a stale auto-fix/* branch makes the PR unmergeable: queued runs can be
@@ -411,7 +415,7 @@ async function mergeWinner(gh, checkId, code, scoreComment) {
   // always applies cleanly. (This is what stranded PRs #11/#12.)
   const existingSha = await gh.ensureBranch(branch, baseSha);
   if (existingSha !== baseSha) await gh.resetBranch(branch, baseSha);
-  await gh.putFile(`specialists/${checkId}.js`, code, branch,
+  await gh.putFile(specialistFileFor(specFileMap, checkId), code, branch,
     `auto-fix(${checkId}): verified rewrite (auto-verify gate passed)`);
   const pr = await gh.openOrUpdatePr(branch,
     `auto-fix(${checkId}): verified rewrite`,
@@ -446,10 +450,10 @@ export async function mergeAllWinners(winners, losers, mergeOne, errLog = consol
 }
 
 // ── Scoreboard ──
-function buildScoreboard({ winners, losers, rejected, merged, tagName, preMergeSha, usage, model, rounds }) {
+function buildScoreboard({ winners, losers, rejected, merged, tagName, preMergeSha, usage, model, rounds, examSeed }) {
   const md = [
     '# Mach-Speed Auto-Verify Scoreboard', '',
-    `**Generated:** ${new Date().toUTCString()}`,
+    `**Generated:** ${new Date().toUTCString()}${examSeed ? ` · **Exam seed:** ${examSeed}` : ''}`,
     `**TL;DR:** ${winners.length} fix(es) passed the gate${merged ? ' & were merged' : ''} · ${losers.length} sent back to the AI (still not better) · ${rejected.length} blocked by safety checks`, '',
     '## How tonight\'s fixes were judged (plain English)', '',
     'Every AI rewrite was tested on **23 real repos**: 15 the AI was allowed to see in its',
@@ -477,7 +481,7 @@ function buildScoreboard({ winners, losers, rejected, merged, tagName, preMergeS
     }
     md.push('');
     md.push('### Undo (if anything looks wrong)', '');
-    md.push(`Main was at commit \`${preMergeSha}\` before these merges, tagged **\`${tagName}\`**.`);
+    md.push(`Main was at commit \`${preMergeSha}\` before these merges, tagged **\`${tagName}\**`.`);
     md.push('Each merged PR also has a **Revert** button on GitHub — one click undoes one specialist.');
     md.push('');
   } else if (winners.length) {
@@ -506,6 +510,30 @@ function buildScoreboard({ winners, losers, rejected, merged, tagName, preMergeS
   return md.join('\n');
 }
 
+// ── Exam seed rotation ──
+// "Repos that change when the test is passed perfectly": when the heal run's
+// fixture exam was fully green (every mutant caught, every control green), the
+// persisted seed is bumped so the NEXT run generates fresh fixture surfaces.
+// Idempotent within a run: the next seed is derived from the report's seed,
+// not from re-reading state, so repeated calls write the same value.
+async function maybeBumpExamSeed(gh, healReport) {
+  if (!healReport?.examPerfect) return false;
+  const seed = Number(healReport.examSeed) || 1;
+  const next = seed + 1;
+  if (!gh) {
+    console.log(`  🎓 Perfect fixture exam (seed ${seed}) — no GitHub token, seed NOT bumped (re-run in CI to rotate)`);
+    return false;
+  }
+  await gh.putFile(
+    EXAM_SEED_PATH,
+    JSON.stringify({ seed: next, previousSeed: seed, bumpedAt: new Date().toISOString() }, null, 2) + '\n',
+    STATE_BRANCH,
+    `exam: perfect score at seed ${seed} — rotate to seed ${next}`,
+  );
+  console.log(`  🎓 Perfect fixture exam at seed ${seed} — exam rotated to seed ${next} for the next run`);
+  return true;
+}
+
 // ── Main ──
 export async function autoverify(argv = process.argv.slice(2)) {
   const opt = parseArgs(argv);
@@ -525,16 +553,33 @@ export async function autoverify(argv = process.argv.slice(2)) {
     process.exit(2);
   }
 
+  // ── 1.5 GitHub handle + exam seed rotation ──
+  // The seed bump must happen BEFORE the no-candidates early exits below: a
+  // perfect exam usually means auto-fix had no gaps to work on, so "nothing to
+  // verify" is exactly the path where the exam must rotate.
+  const repoSlug = opt.repo || process.env.GITHUB_REPOSITORY || null;
+  let gh = null;
+  if (process.env.GITHUB_TOKEN && repoSlug) {
+    const [owner, repo] = repoSlug.split('/');
+    gh = new GitHubApi(owner, repo);
+    await gh.ensureBranch(STATE_BRANCH, await gh.defaultBranchSha());
+  }
+  if (opt.pr && !gh) throw new Error('--pr needs GITHUB_TOKEN and GITHUB_REPOSITORY (or --repo owner/name)');
+  await maybeBumpExamSeed(gh, healReport);
+
   // ── 2. Load candidates ──
   if (!fs.existsSync(opt.proposed)) {
     console.log(`  No ${opt.proposed}/ directory — auto-fix produced nothing. Nothing to verify.`);
     return { winners: [], losers: [], rejected: [] };
   }
   const severityRank = new Map((healReport.specialistReports || []).map(r => [r.checkId, r.severityScore || 0]));
+  // Filenames may differ from checkIds (auth-config lives in
+  // authentication-configuration.js) — resolve real paths once, up front.
+  const specFileMap = buildSpecialistFileMap(repoRoot);
   let candidates = fs.readdirSync(opt.proposed)
     .filter(f => f.endsWith('.js'))
     .map(f => f.replace(/\.js$/, ''))
-    .filter(id => fs.existsSync(path.join(repoRoot, 'specialists', `${id}.js`)));
+    .filter(id => specFileMap.has(id));
   if (opt.only) candidates = candidates.filter(id => opt.only.includes(id));
   candidates.sort((a, b) => (severityRank.get(b) || 0) - (severityRank.get(a) || 0));
   candidates = candidates.slice(0, MAX_CANDIDATES);
@@ -571,14 +616,6 @@ export async function autoverify(argv = process.argv.slice(2)) {
   // ── 4. Services ──
   installFetchMiddleware();
   const moonshot = new Moonshot();
-  const repoSlug = opt.repo || process.env.GITHUB_REPOSITORY || null;
-  let gh = null;
-  if (process.env.GITHUB_TOKEN && repoSlug) {
-    const [owner, repo] = repoSlug.split('/');
-    gh = new GitHubApi(owner, repo);
-    await gh.ensureBranch(STATE_BRANCH, await gh.defaultBranchSha());
-  }
-  if (opt.pr && !gh) throw new Error('--pr needs GITHUB_TOKEN and GITHUB_REPOSITORY (or --repo owner/name)');
   const threads = new ThreadStore(gh, path.join(repoRoot, 'threads'));
   // Thread saves commit to the shared state branch — serialize them (the Moonshot
   // chats themselves run in parallel) so concurrent branch commits can't race.
@@ -598,9 +635,14 @@ export async function autoverify(argv = process.argv.slice(2)) {
   // ── 4.6 Materialize the fixture exam (mutants + positive controls) into the
   // same snapshot cache — the sweeps below then measure them like real repos.
   let fixtureManifest = null;
+  let examSeed = null;
   if (process.env[REPO_CACHE_ENV]) {
-    fixtureManifest = await buildFixtures(path.resolve(process.env[REPO_CACHE_ENV]));
-    console.log(`  Fixture exam: ${fixtureManifest.length} synthetic repos ready (mutants + positive controls)`);
+    // Same exam heal ran: prefer the report's seed (immune to the rotation
+    // bump above); fall back to resolving state only for older reports.
+    examSeed = Number(healReport.examSeed) || await resolveExamSeed();
+    const generated = generateFixtures(examSeed);
+    fixtureManifest = await buildFixtures(path.resolve(process.env[REPO_CACHE_ENV]), [...FIXTURES, ...generated]);
+    console.log(`  Fixture exam: ${fixtureManifest.length} synthetic repos ready (mutants + positive controls) · exam seed ${examSeed}`);
   } else {
     console.log('  Fixture exam: SKIPPED (no repo cache dir configured)');
   }
@@ -638,7 +680,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
 
       if (active.length) {
         const codes = Object.fromEntries(active.map(id => [id, state.get(id).code]));
-        const backups = applyCandidates(repoRoot, codes);
+        const backups = applyCandidates(repoRoot, codes, specFileMap);
         let postRows;
         let fixPostMap = null;
         try {
@@ -680,7 +722,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
             : null;
           const decision = decideMerge({ lintHits: s.lintHits, ...metrics, fixtures: fixtureGate });
           const fixtureDetail = fixPostMap ? fixPostMap.get(checkId) : null;
-          const record = { checkId, code: s.code, ...metrics, fixtureDetail, reasons: decision.reasons, rounds: round };
+          const record = { checkId, code: s.code, ...metrics, fixtureDetail, examSeed, reasons: decision.reasons, rounds: round };
           s.history.push(record);
           if (decision.verdict === 'merge') {
             console.log(`    ✅ ${checkId}: PASSED the gate (severity ${metrics.trainBase.severity}→${metrics.trainPost.severity}, hidden ${metrics.holdBase.severity}→${metrics.holdPost.severity}, 0 regressions)`);
@@ -794,7 +836,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
     await gh.createTag(tagName, preMergeSha).catch(err => console.warn(`    tag creation failed (non-fatal): ${err.message}`));
     await mergeAllWinners(winners, losers, async (w) => {
       const comment = scoreCommentFor(w);
-      const res = await mergeWinner(gh, w.checkId, w.code, comment);
+      const res = await mergeWinner(gh, w.checkId, w.code, comment, specFileMap);
       w.pr = res.pr; w.number = res.number; w.mergeSha = res.mergeSha;
       console.log(`    ✅ ${w.checkId}: merged via PR #${res.number} (${res.pr})`);
     });
@@ -806,6 +848,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
   const report = {
     generatedAt: new Date().toISOString(),
     rounds: opt.rounds,
+    examSeed,
     merged: winners.map(w => ({ checkId: w.checkId, pr: w.pr || null, mergeSha: w.mergeSha || null })),
     sentBack: losers.map(l => ({ checkId: l.checkId, reasons: l.reasons })),
     lintRejected: rejected.map(r => ({ checkId: r.checkId, reasons: r.reasons })),
@@ -815,7 +858,7 @@ export async function autoverify(argv = process.argv.slice(2)) {
   fs.writeFileSync('verify-report.json', JSON.stringify(report, null, 2));
   fs.writeFileSync('verify-report.md', buildScoreboard({
     winners, losers, rejected, merged: winners.some(w => w.pr), tagName, preMergeSha,
-    usage: moonshot.usage, model: moonshot.model, rounds: opt.rounds,
+    usage: moonshot.usage, model: moonshot.model, rounds: opt.rounds, examSeed,
   }));
 
   console.log('\n  ══ SCOREBOARD ══');
@@ -844,7 +887,7 @@ function scoreCommentFor(w) {
     `Regression flips: **${w.flips.length}** · New crashes: **${w.crashes.length}** · Anti-gaming lint: **clean**`,
     ...(w.fixtureDetail ? [
       '',
-      `Fixture exam (synthetic repos with known answers): mutants **${w.fixtureDetail.mutantsCaught}/${w.fixtureDetail.mutantsTotal}** caught · positive controls **${w.fixtureDetail.positivesGreen}/${w.fixtureDetail.positivesTotal}** green`,
+      `Fixture exam (synthetic repos with known answers): mutants **${w.fixtureDetail.mutantsCaught}/${w.fixtureDetail.mutantsTotal}** caught · positive controls **${w.fixtureDetail.positivesGreen}/${w.fixtureDetail.positivesTotal}** green${w.examSeed ? ` · exam seed **${w.examSeed}**` : ''}`,
     ] : []),
     '',
     '_Merged automatically by auto-verify.js — revert this PR from the GitHub UI if anything looks off._',
