@@ -13,7 +13,7 @@
  *   - Surface-only variation: randomization never changes what the correct
  *     answer is — every generated repo is an unambiguous instance of its
  *     fault class. (The de-ambiguation rule learned from wave 1.)
- *   - Rotation: the template pool (19) is larger than the per-version sample
+ *   - Rotation: the template pool (22) is larger than the per-version sample
  *     (8), so passing one version does not prove passing the pool.
  *   - Pure module: no I/O on import. Seed resolution with I/O lives in
  *     resolveExamSeed(), explicitly called by the pipeline.
@@ -106,6 +106,19 @@ const PNPM_OVERRIDE_PKGS = [
 ];
 const PNPM_EXCLUDED_PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64', 'win32-arm64'];
 const REPLIT_INTEGRATIONS = ['stripe:1.0.0', 'openai:1.0.0', 'resend:1.0.0'];
+// Wave 4: audit-grounded depth gaps. The current specialist scans sub-package
+// manifests ONLY under apps|packages/*/ — Replit's own template convention
+// (artifacts/*, seen in the real audit) and other layouts are invisible.
+const SUBPKG_PARENT_DIRS = ['services', 'modules', 'plugins'];
+const SUBPKG_APP_NAMES = ['web-client', 'admin-ui', 'storefront', 'dashboard'];
+const SUBPKG_REPLIT_DEPS = ['@replit/object-storage', '@replit/database', '@replit/repl-auth', '@replit/ai'];
+// Monorepo depth stress: mid-priority noise names that OUTRANK the fault file
+// under the specialist's priority sort — WITHOUT the /(server|api|routes)/
+// shape (that would tip the repo-type classifier from deployable to server).
+const DEPTH_NOISE_DIRS = ['middleware', 'controllers', 'handlers', 'config'];
+// Keyword-free deep paths (no replit/auth/billing/config/server/env tokens)
+// so the fault file sorts BELOW the 30-file scan cutoff today.
+const DEPTH_FAULT_FILES = ['lib/deep/zz-legacy-bridge.js', 'lib/modules/zz/old-data-bridge.js', 'lib/util/zz/legacy-store.js'];
 
 /** A valid sk-proj-shaped key with fresh material each seed. */
 const fakeAiKey = (rng) => `sk-proj-${randString(rng, 24)}`;
@@ -603,6 +616,88 @@ GITHUB_TOKEN = "${token}"
   };
 }
 
+// Wave 4 — a Replit dependency in a sub-package manifest OUTSIDE apps|packages
+// (the audit's real Tempus layout used artifacts/*; the static twin uses
+// artifacts too, these generated variants cover the other conventions).
+function platformLockInArtifactsDep(rng, seed) {
+  const parent = pick(rng, SUBPKG_PARENT_DIRS);
+  const app = pick(rng, SUBPKG_APP_NAMES);
+  const replitDep = pick(rng, SUBPKG_REPLIT_DEPS);
+  const manifest = JSON.stringify({
+    name: app,
+    version: '1.0.0',
+    private: true,
+    dependencies: { react: '^18.3.1', [replitDep]: '^0.2.1' },
+  }, null, 2) + '\n';
+  return {
+    slug: `mach-speed-exam/g${seed}-platform-lock-in-subpkg-dep`,
+    kind: 'mutant',
+    expectedType: 'deployable',
+    note: `Generated from the platform-lock-in-subpkg-dep fault class: root package.json is clean, but ${parent}/${app}/package.json depends on ${replitDep} — sub-package scanning limited to apps|packages never sees it.`,
+    files: { ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }), [`${parent}/${app}/package.json`]: manifest },
+    expect: { 'platform-lock-in': ['fail', 'check-it'] },
+  };
+}
+
+// Wave 4 — monorepo depth stress: a known-detectable coupling var (REPLIT_DB_URL)
+// sits in a keyword-free deep file while 32-37 mid-priority noise files push it
+// below the 30-file scan cutoff. The miss (today) is purely positional: real
+// monorepos exceed any scan cap, and a correct specialist must still surface
+// coupling anywhere in source.
+function platformLockInMonorepoDepth(rng, seed) {
+  const noiseCount = 32 + Math.floor(rng() * 6);
+  const files = { ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }) };
+  for (let i = 0; i < noiseCount; i++) {
+    const dir = DEPTH_NOISE_DIRS[i % DEPTH_NOISE_DIRS.length];
+    files[`${dir}/endpoint-${i}.js`] = `// Endpoint ${i} — standard CRUD stub.
+const express = require('express');
+const router = express.Router();
+
+router.get('/', (req, res) => res.json({ ok: true, endpoint: ${i} }));
+
+module.exports = router;
+`;
+  }
+  const deepFile = pick(rng, DEPTH_FAULT_FILES);
+  files[deepFile] = `// Legacy data bridge — still reads the platform-provided database URL.
+const dbUrl = process.env.REPLIT_DB_URL;
+
+function connect() {
+  return { url: dbUrl };
+}
+
+module.exports = { connect };
+`;
+  return {
+    slug: `mach-speed-exam/g${seed}-platform-lock-in-depth-env`,
+    kind: 'mutant',
+    expectedType: 'deployable',
+    note: `Generated from the platform-lock-in-depth-env fault class: ${noiseCount} mid-priority noise files (middleware/controllers/handlers/config prefixes) push the keyword-free deep file ${deepFile} below the 30-file scan cutoff — the REPLIT_DB_URL inside it is trivially detectable once read. The gap is scan coverage, not pattern knowledge.`,
+    files,
+    expect: { 'platform-lock-in': ['fail', 'check-it'] },
+  };
+}
+
+// Wave 4 — .replit declares agent integrations only (no bucket, no token):
+// a hard dependency on platform-managed services that must FAIL, not check-it.
+function platformLockInIntegrationsOnly(rng, seed) {
+  const count = 1 + Math.floor(rng() * 2);
+  const integrations = shuffle(rng, [...REPLIT_INTEGRATIONS]).slice(0, count);
+  const replit = `run = "npm run dev"
+
+[agent]
+integrations = [${integrations.map((i) => `"${i}"`).join(', ')}]
+`;
+  return {
+    slug: `mach-speed-exam/g${seed}-platform-lock-in-integrations`,
+    kind: 'mutant',
+    expectedType: 'deployable',
+    note: `Generated from the platform-lock-in-integrations fault class: .replit declares managed agent integration(s) (${integrations.join(', ')}) with no bucket ID and no token — today's content check stops at check-it, but losing managed ${integrations[0].split(':')[0]} off-platform is a migration blocker (audit: HIGH).`,
+    files: { ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }), '.replit': replit },
+    expect: { 'platform-lock-in': ['fail'] },
+  };
+}
+
 function dynamicPortHardcoded(rng, seed) {
   const port = pick(rng, PORTS);
   return {
@@ -647,7 +742,7 @@ function corsUnconfigured(rng, seed) {
 }
 
 /* --------------------------------------------------------------------------
- * The template pool (19) — larger than the per-version sample (8) so the exam
+ * The template pool (22) — larger than the per-version sample (8) so the exam
  * ROTATES: passing one version does not prove passing the pool.
  * ------------------------------------------------------------------------ */
 
@@ -669,6 +764,9 @@ const TEMPLATES = [
   ['platform-lock-in-ai-integrations', platformLockInAiIntegrations],
   ['platform-lock-in-pnpm-overrides', platformLockInPnpmOverrides],
   ['platform-lock-in-replit-config', platformLockInReplitConfig],
+  ['platform-lock-in-subpkg-dep', platformLockInArtifactsDep],
+  ['platform-lock-in-depth-env', platformLockInMonorepoDepth],
+  ['platform-lock-in-integrations', platformLockInIntegrationsOnly],
   ['dynamic-port-hardcoded', dynamicPortHardcoded],
   ['cors-unconfigured', corsUnconfigured],
 ];
