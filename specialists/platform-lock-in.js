@@ -24,7 +24,11 @@ const REPLIT_PACKAGES = [
   { pkg: '@replit/protocol', replacement: 'Remove — internal Replit protocol' },
 ];
 
-const REPLIT_ENV_VAR_PATTERN = /\b(?:REPLIT_\w+|REPL_ID|REPL_DB_URL|REPL_IMAGE|REPL_LANGUAGE|REPL_OWNER|REPL_PUBKEYS|REPL_SLUG|REPL_URL|REPL_USERNAME)\b/;
+const REPLIT_ENV_VAR_PATTERN = /\b(?:REPLIT_\w+|REPL_IDENTITY|REPL_ID|REPL_DB_URL|REPL_IMAGE|REPL_LANGUAGE|REPL_OWNER|REPL_PUBKEYS|REPL_SLUG|REPL_URL|REPL_USERNAME|WEB_REPL_RENEWAL)\b/;
+
+const REPLIT_API_PATTERN = /X-Replit-Token|connection\?connector_names=|replit\.com\/api\//i;
+
+const REPLIT_CONFIG_CRITICAL_PATTERN = /defaultBucket|ghp_[A-Za-z0-9_]+/i;
 
 const EXCLUDED_PREFIXES = [
   'node_modules/',
@@ -59,6 +63,19 @@ function looksLikeSourceFile(p) {
   return CODE_EXTENSIONS.test(p);
 }
 
+function filePriority(p) {
+  let score = 0;
+  const lower = p.toLowerCase();
+  if (/replit/.test(lower)) score += 100;
+  if (/(?:auth|identity)/.test(lower)) score += 60;
+  if (/(?:billing|payment|stripe|connector)/.test(lower)) score += 60;
+  if (/(?:config|settings)/.test(lower)) score += 40;
+  if (/(?:server|api|middleware|route|controller|handler)/.test(lower)) score += 30;
+  if (/(?:env|secret|credential|token)/.test(lower)) score += 30;
+  score -= p.split('/').length * 2;
+  return score;
+}
+
 export async function check(context) {
   const { tree, files, packageJson, repoType } = context;
 
@@ -73,16 +90,12 @@ export async function check(context) {
       };
     }
 
-    const hasReplitConfig = tree.includes('.replit') || tree.includes('replit.nix');
-
-    // Root package.json dependencies
     const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
     const found = [];
     for (const { pkg, replacement } of REPLIT_PACKAGES) {
       if (deps[pkg]) found.push({ pkg, replacement });
     }
 
-    // Workspace sub-packages (up to 10 file reads)
     const subPkgs = tree.filter(p => isFile(p) && /^(?:apps|packages)\/[^/]+\/package\.json$/.test(p));
     for (const subPkgPath of subPkgs.slice(0, 10)) {
       try {
@@ -105,9 +118,25 @@ export async function check(context) {
         issue: `${f.pkg} detected — ${f.replacement}`,
       });
     }
+
+    const hasReplitConfig = tree.includes('.replit') || tree.includes('replit.nix');
+    let replitCritical = false;
+
     if (tree.includes('.replit')) {
-      findings.push({ file: '.replit', issue: 'Replit config file detected — remove after migrating env vars and dependencies' });
+      try {
+        const replitContent = await files.get('.replit');
+        if (replitContent && REPLIT_CONFIG_CRITICAL_PATTERN.test(replitContent)) {
+          replitCritical = true;
+          findings.push({ file: '.replit', issue: 'Replit config contains platform-managed resource IDs or embedded secrets — critical lock-in' });
+        } else {
+          findings.push({ file: '.replit', issue: 'Replit config file detected — remove after migrating env vars and dependencies' });
+        }
+      } catch (e) {
+        console.error('platform-lock-in: error reading .replit:', e);
+        findings.push({ file: '.replit', issue: 'Replit config file detected — remove after migrating env vars and dependencies' });
+      }
     }
+
     if (tree.includes('replit.nix')) {
       findings.push({ file: 'replit.nix', issue: 'Replit nix config detected — remove after migrating dependencies to standard package management' });
     }
@@ -122,26 +151,36 @@ export async function check(context) {
       };
     }
 
-    // Scan source files for Replit-only environment variables (up to 30 reads)
+    if (replitCritical) {
+      return {
+        checkId,
+        status: 'fail',
+        confidence: 'high',
+        message: 'Replit config contains critical platform lock-in signals — must be migrated',
+        findings,
+      };
+    }
+
     const sourceFiles = tree
       .filter(looksLikeSourceFile)
-      .sort((a, b) => {
-        const depthA = a.split('/').length;
-        const depthB = b.split('/').length;
-        if (depthA !== depthB) return depthA - depthB;
-        return a.localeCompare(b);
-      })
+      .sort((a, b) => filePriority(b) - filePriority(a))
       .slice(0, 30);
 
-    const envFindings = [];
+    const sourceFindings = [];
     for (const filePath of sourceFiles) {
       try {
         const content = await files.get(filePath);
         if (!content) continue;
         if (REPLIT_ENV_VAR_PATTERN.test(content)) {
-          envFindings.push({
+          sourceFindings.push({
             file: filePath,
-            issue: 'Replit-specific environment variable referenced — app may only run on Replit',
+            issue: 'Replit-specific environment variable or identity token referenced — app may only run on Replit',
+          });
+        }
+        if (REPLIT_API_PATTERN.test(content)) {
+          sourceFindings.push({
+            file: filePath,
+            issue: 'Replit-specific API or connector token usage detected — hard platform coupling',
           });
         }
       } catch (e) {
@@ -149,13 +188,13 @@ export async function check(context) {
       }
     }
 
-    if (envFindings.length > 0) {
+    if (sourceFindings.length > 0) {
       return {
         checkId,
         status: 'fail',
         confidence: 'high',
-        message: `${envFindings.length} Replit-specific environment variable reference(s) found — must be decoupled before migrating`,
-        findings: envFindings,
+        message: `${sourceFindings.length} Replit-specific platform reference(s) found in source — must be decoupled before migrating`,
+        findings: [...findings, ...sourceFindings],
       };
     }
 
