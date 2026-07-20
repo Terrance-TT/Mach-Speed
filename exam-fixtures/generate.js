@@ -13,7 +13,7 @@
  *   - Surface-only variation: randomization never changes what the correct
  *     answer is — every generated repo is an unambiguous instance of its
  *     fault class. (The de-ambiguation rule learned from wave 1.)
- *   - Rotation: the template pool (14) is larger than the per-version sample
+ *   - Rotation: the template pool (19) is larger than the per-version sample
  *     (8), so passing one version does not prove passing the pool.
  *   - Pure module: no I/O on import. Seed resolution with I/O lives in
  *     resolveExamSeed(), explicitly called by the pipeline.
@@ -86,6 +86,26 @@ const STALE_DEPS = [
 const WEBHOOK_FILES = ['api/webhooks.js', 'api/stripe-hooks.js', 'api/payments.js'];
 const PORTS = [3000, 4000, 5000, 8080, 9000];
 const REPLIT_ENV_VARS = ['REPLIT_DB_URL', 'REPL_ID', 'REPL_SLUG', 'REPLIT_DOMAINS'];
+// Wave 3 (Replit lock-in pack, from external audit): surfaces the current
+// specialist cannot see — connector API calls, platform-identity env vars,
+// AI-integration proxy env vars, pnpm platform overrides, .replit content.
+// ISOLATION RULE for all five classes: no Replit packages in package.json,
+// no .replit file (except the config class itself), and no REPLIT_\w+ env
+// names anywhere — so today's detection reports 'no lock-in' and every catch
+// after a rewrite is measurable improvement, not luck.
+const CONNECTOR_CLIENT_FILES = ['server/billing/stripeClient.js', 'lib/stripe-client.js', 'server/payments/stripe.js'];
+const CONNECTOR_TOKEN_VARS = ['CONNECTOR_AUTH_TOKEN', 'CONNECTOR_API_TOKEN', 'CONNECTORS_TOKEN'];
+const IDENTITY_MW_FILES = ['server/middleware/identity.js', 'server/auth/repl-identity.js', 'lib/identity.js'];
+const IDENTITY_FN_NAMES = ['requireIdentity', 'replIdentity', 'identityGuard'];
+const AI_CLIENT_FILES = ['server/ai/client.js', 'lib/openai.js', 'server/ai/openai-client.js'];
+const AI_PROXY_URLS = ['https://ai-integrations.replit.dev/v1', 'https://ai-gateway.replit.dev/v1'];
+const PNPM_OVERRIDE_PKGS = [
+  { parent: 'esbuild', child: (p) => `@esbuild/${p}` },
+  { parent: 'rollup', child: (p) => `@rollup/${p}` },
+  { parent: 'lightningcss', child: (p) => `lightningcss-${p}` },
+];
+const PNPM_EXCLUDED_PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64', 'win32-arm64'];
+const REPLIT_INTEGRATIONS = ['stripe:1.0.0', 'openai:1.0.0', 'resend:1.0.0'];
 
 /** A valid sk-proj-shaped key with fresh material each seed. */
 const fakeAiKey = (rng) => `sk-proj-${randString(rng, 24)}`;
@@ -421,6 +441,168 @@ function platformLockInEnv(rng, seed) {
   };
 }
 
+/* --- Wave 3: Replit lock-in fault classes the current specialist cannot see.
+ * Every mutant carries ZERO of today's signals (no Replit packages in
+ * package.json, no .replit file unless that IS the fault, no REPLIT_\w+ env
+ * names), so the current specialist passes them — every catch after a rewrite
+ * is measurable improvement (mutantsGained), never luck. --- */
+
+// Credentials fetched from the platform connector API (api/v2/connection URL
+// + X-Replit-Token header) — no env-var names today's regex knows.
+function platformLockInConnectorApi(rng, seed) {
+  const file = pick(rng, CONNECTOR_CLIENT_FILES);
+  const tokenVar = pick(rng, CONNECTOR_TOKEN_VARS);
+  const hostConst = `connectorHost${seed}`;
+  const content = `// Stripe client — credentials are fetched at runtime from the hosting
+// platform's connector API instead of a plain STRIPE_SECRET_KEY env var.
+const ${hostConst} = process.env.CONNECTORS_HOSTNAME || 'connectors.replit.dev';
+
+async function getStripeSecretKey() {
+  const url = 'https://' + ${hostConst} + '/api/v2/connection?environment=production&connector_names=stripe';
+  const res = await fetch(url, {
+    headers: { Accept: 'application/json', 'X-Replit-Token': process.env.${tokenVar} },
+  });
+  if (!res.ok) throw new Error('connector API returned ' + res.status);
+  const data = await res.json();
+  return data.connection.credentials.secret_key;
+}
+
+module.exports = { getStripeSecretKey };
+`;
+  return {
+    slug: `mach-speed-exam/g${seed}-platform-lock-in-connector-api`,
+    kind: 'mutant',
+    expectedType: 'deployable',
+    note: `Generated from the platform-lock-in-connector-api fault class: Stripe credentials come from the platform connector API (api/v2/connection?connector_names= URL + X-Replit-Token header in ${file}) — no Replit packages, no .replit file, no REPLIT_* env vars, so today's detection reports 'no lock-in'.`,
+    files: { ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }), [file]: content },
+    expect: { 'platform-lock-in': ['fail', 'check-it'] },
+  };
+}
+
+// Platform-issued identity env vars (REPL_IDENTITY / WEB_REPL_RENEWAL) — both
+// evade today's REPLIT_\w+|REPL_ID\b regex.
+function platformLockInIdentityEnv(rng, seed) {
+  const file = pick(rng, IDENTITY_MW_FILES);
+  const fn = pick(rng, IDENTITY_FN_NAMES);
+  const content = `// Request identity — trusts the hosting platform's identity tokens.
+const platformIdentity = process.env.REPL_IDENTITY;
+const renewalToken = process.env.WEB_REPL_RENEWAL;
+
+function ${fn}(req, res, next) {
+  const header = req.headers['x-replit-identity'] || platformIdentity;
+  if (!header) return res.status(401).json({ error: 'no platform identity' });
+  req.identity = { token: header, renewal: renewalToken };
+  next();
+}
+
+module.exports = { ${fn} };
+`;
+  return {
+    slug: `mach-speed-exam/g${seed}-platform-lock-in-identity-env`,
+    kind: 'mutant',
+    expectedType: 'deployable',
+    note: `Generated from the platform-lock-in-identity-env fault class: auth middleware reads platform-issued identity env vars (REPL_IDENTITY, WEB_REPL_RENEWAL in ${file}) — both evade today's env regex, and there are no Replit packages or .replit config.`,
+    files: { ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }), [file]: content },
+    expect: { 'platform-lock-in': ['fail', 'check-it'] },
+  };
+}
+
+// AI calls routed through the platform AI-integrations proxy
+// (AI_INTEGRATIONS_OPENAI_* env vars) — invisible to today's detection.
+function platformLockInAiIntegrations(rng, seed) {
+  const file = pick(rng, AI_CLIENT_FILES);
+  const proxy = pick(rng, AI_PROXY_URLS);
+  const deps = { ...STD_DEPS, openai: '^4.52.7' };
+  const content = `// AI client — talks to the hosting platform's AI-integrations proxy,
+// not to OpenAI directly; the key is auto-provisioned by the platform.
+const OpenAI = require('openai');
+
+const client = new OpenAI({
+  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || '${proxy}',
+  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
+});
+
+async function summarize(text) {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: text }],
+  });
+  return res.choices[0].message.content;
+}
+
+module.exports = { client, summarize };
+`;
+  return {
+    slug: `mach-speed-exam/g${seed}-platform-lock-in-ai-integrations`,
+    kind: 'mutant',
+    expectedType: 'deployable',
+    note: `Generated from the platform-lock-in-ai-integrations fault class: OpenAI calls route through the platform AI-integrations proxy (AI_INTEGRATIONS_OPENAI_BASE_URL / AI_INTEGRATIONS_OPENAI_API_KEY in ${file}) — today's env regex has no pattern for them, and the openai package itself is legitimate.`,
+    files: { ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY, deps }), [file]: content },
+    expect: { 'platform-lock-in': ['fail', 'check-it'] },
+  };
+}
+
+// pnpm-workspace.yaml that strips non-Linux build platforms (breaks Mac/Windows
+// builds) and exempts platform packages from supply-chain age checks.
+function platformLockInPnpmOverrides(rng, seed) {
+  const pkgs = shuffle(rng, [...PNPM_OVERRIDE_PKGS]).slice(0, 2 + Math.floor(rng() * 2));
+  const platforms = shuffle(rng, [...PNPM_EXCLUDED_PLATFORMS]).slice(0, 2 + Math.floor(rng() * 2));
+  const overrideLines = [];
+  for (const p of pkgs) {
+    for (const plat of platforms) overrideLines.push(`  '${p.parent}>${p.child(plat)}': '-'`);
+  }
+  const yaml = `packages:
+  - 'artifacts/*'
+
+catalog:
+  react: ^18.3.1
+  vite: ^5.4.8
+
+minimumReleaseAgeExclude:
+  - '@replit/*'
+  - stripe-replit-sync
+
+overrides:
+${overrideLines.join('\n')}
+`;
+  return {
+    slug: `mach-speed-exam/g${seed}-platform-lock-in-pnpm-overrides`,
+    kind: 'mutant',
+    expectedType: 'deployable',
+    note: `Generated from the platform-lock-in-pnpm-overrides fault class: pnpm-workspace.yaml exempts '@replit/*' + stripe-replit-sync from release-age checks and removes ${overrideLines.length} non-Linux build platforms (${platforms.join(', ')}) — package.json is clean, so today's detection reports 'no lock-in' while builds break off-Linux.`,
+    files: { ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }), 'pnpm-workspace.yaml': yaml },
+    expect: { 'platform-lock-in': ['fail', 'check-it'] },
+  };
+}
+
+// .replit config whose CONTENT is critical: managed bucket ID, declared
+// platform integration, and a live GitHub token. Existence-level detection
+// only says check-it — this must fail. (Static twin lives in specs.js.)
+function platformLockInReplitConfig(rng, seed) {
+  const bucket = `replit-objstore-${randString(rng, 6).toLowerCase()}`;
+  const token = `ghp_${randString(rng, 36)}`;
+  const integration = pick(rng, REPLIT_INTEGRATIONS);
+  const replit = `run = "npm run dev"
+
+[objectStorage]
+defaultBucketID = "${bucket}"
+
+[agent]
+integrations = ["${integration}"]
+
+[env]
+GITHUB_TOKEN = "${token}"
+`;
+  return {
+    slug: `mach-speed-exam/g${seed}-platform-lock-in-replit-config`,
+    kind: 'mutant',
+    expectedType: 'deployable',
+    note: `Generated from the platform-lock-in-replit-config fault class: .replit contains a managed bucket ID (${bucket}), a declared platform integration (${integration}), and a LIVE GitHub token — no Replit packages and no REPLIT_* env vars, so today's detection stops at the .replit-exists check-it. A committed credential plus hard platform coupling must FAIL.`,
+    files: { ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }), '.replit': replit },
+    expect: { 'platform-lock-in': ['fail'] },
+  };
+}
+
 function dynamicPortHardcoded(rng, seed) {
   const port = pick(rng, PORTS);
   return {
@@ -465,7 +647,7 @@ function corsUnconfigured(rng, seed) {
 }
 
 /* --------------------------------------------------------------------------
- * The template pool (14) — larger than the per-version sample (8) so the exam
+ * The template pool (19) — larger than the per-version sample (8) so the exam
  * ROTATES: passing one version does not prove passing the pool.
  * ------------------------------------------------------------------------ */
 
@@ -482,6 +664,11 @@ const TEMPLATES = [
   ['object-storage-media-dir', objectStorageMediaDir],
   ['payment-commented-webhook', paymentCommentedWebhook],
   ['platform-lock-in-env', platformLockInEnv],
+  ['platform-lock-in-connector-api', platformLockInConnectorApi],
+  ['platform-lock-in-identity-env', platformLockInIdentityEnv],
+  ['platform-lock-in-ai-integrations', platformLockInAiIntegrations],
+  ['platform-lock-in-pnpm-overrides', platformLockInPnpmOverrides],
+  ['platform-lock-in-replit-config', platformLockInReplitConfig],
   ['dynamic-port-hardcoded', dynamicPortHardcoded],
   ['cors-unconfigured', corsUnconfigured],
 ];
