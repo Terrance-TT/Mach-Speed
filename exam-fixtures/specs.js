@@ -1326,6 +1326,32 @@ app.listen(PORT, '0.0.0.0', () => {
   expect: { 'platform-lock-in': ['fail', 'check-it'] },
 };
 
+// -- platform-lock-in #3 (wave 3, from external lock-in audit): the .replit
+//    CONTENT is critical — managed bucket ID + declared platform integration +
+//    LIVE GitHub token. Existence-level detection only reports check-it; the
+//    content demands a fail --
+const M_PLATFORM_LOCKIN_REPLIT_CONFIG = {
+  slug: 'mach-speed-exam/mutant-platform-lock-in-replit-config',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Healthy Express deployable whose .replit config contains a managed object-storage bucket ID (defaultBucketID), a declared Replit agent integration (stripe:1.0.0), and a live GitHub token (ghp_...). No Replit packages and no REPLIT_* env vars anywhere, so today's package/env detection reports 'no lock-in' and the bare .replit existence only earns a check-it — but a committed live credential plus hard platform coupling is critical. platform-lock-in must FAIL it.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    '.replit': `run = "npm run dev"
+
+[objectStorage]
+defaultBucketID = "replit-objstore-prod-7f3a9c"
+
+[agent]
+integrations = ["stripe:1.0.0"]
+
+[env]
+GITHUB_TOKEN = "ghp_T4mpusR3pl1tT0k3nExAmFixtur3N0tR3alX"
+`,
+  },
+  expect: { 'platform-lock-in': ['fail'] },
+};
+
 /* --------------------------------------------------------------------------
  * POSITIVE CONTROLS — provably-correct mini-repos; every listed check must
  * stay inside its allowed status set. Allowed sets were pinned to the
@@ -1535,10 +1561,111 @@ export function tally<T>(values: T[]): Map<T, number> {
   },
 };
 
+// -- Wave 3 dedicated platform-lock-in controls (over-tightening guards) --
+// Portable patterns a tightened specialist must NOT flag: official SDKs,
+// plain env vars, framework-standard configs. Each lists ONLY platform-lock-in
+// so the guard is surgical (other checks are not constrained here).
+
+// -- control: standard Stripe integration, the portable way --
+const C_LOCKIN_PLAIN_STRIPE = {
+  slug: 'mach-speed-exam/control-platform-lock-in-plain-stripe',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "Standard Stripe integration done the portable way: official stripe npm package, STRIPE_SECRET_KEY env var, own webhook handler with signature verification. No Replit packages, no connector API, no platform env vars — a tightened platform-lock-in must stay silent.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY, deps: { ...STD_DEPS, stripe: '^16.2.0' } }),
+    'server/billing/stripeClient.js': `// Stripe client — portable: official SDK + plain env-var credentials.
+const Stripe = require('stripe');
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+function constructWebhookEvent(rawBody, signature) {
+  return stripe.webhooks.constructEvent(rawBody, signature, process.env.STRIPE_WEBHOOK_SECRET);
+}
+
+module.exports = { stripe, constructWebhookEvent };
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
+// -- control: standard OpenAI integration, direct API, own key --
+const C_LOCKIN_PLAIN_OPENAI = {
+  slug: 'mach-speed-exam/control-platform-lock-in-plain-openai',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "Standard OpenAI integration done the portable way: official openai npm package, OPENAI_API_KEY env var, direct https://api.openai.com/v1 endpoint. No AI_INTEGRATIONS_* proxy vars — a tightened platform-lock-in must stay silent.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY, deps: { ...STD_DEPS, openai: '^4.52.7' } }),
+    'server/ai/client.js': `// AI client — portable: official SDK, direct API endpoint, own key.
+const OpenAI = require('openai');
+
+const client = new OpenAI({
+  baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+async function summarize(text) {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: text }],
+  });
+  return res.choices[0].message.content;
+}
+
+module.exports = { client, summarize };
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
+// -- control: framework-standard vite config with a NODE_ENV conditional --
+const C_LOCKIN_VITE_CLEAN = {
+  slug: 'mach-speed-exam/control-platform-lock-in-vite-config-clean',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "Framework-standard vite config: official @vitejs/plugin-react, a NODE_ENV build conditional (universal, not platform detection). No Replit plugins and no REPL_ID branching — a tightened platform-lock-in must stay silent.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY, deps: { ...STD_DEPS, '@vitejs/plugin-react': '^4.3.1' } }),
+    'vite.config.js': `// Frontend build config — framework-standard, no platform-specific plugins.
+const react = require('@vitejs/plugin-react');
+
+module.exports = {
+  plugins: [react()],
+  build: {
+    sourcemap: process.env.NODE_ENV !== 'production',
+  },
+};
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
+// -- control: plain pnpm-workspace catalog, no platform overrides --
+const C_LOCKIN_PNPM_CLEAN = {
+  slug: 'mach-speed-exam/control-platform-lock-in-pnpm-clean',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "Plain pnpm workspace: a normal catalog with mainstream packages, no platform-stripping overrides, no security-exemption lists. A tightened platform-lock-in must not flag pnpm-workspace.yaml merely for existing.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    'pnpm-workspace.yaml': `packages:
+  - 'artifacts/*'
+
+catalog:
+  react: ^18.3.1
+  vite: ^5.4.8
+  typescript: ^5.5.4
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
 /* --------------------------------------------------------------------------
  * The full fixture set: 12 wave-1 mutants (one per original check) + 5 wave-1
  * mutants for the newer specialists + 12 wave-2 adversarial mutants (7 for the
- * original checks + 5 for the newer ones) + 3 controls = 32 fixtures.
+ * original checks + 5 for the newer ones) + 1 wave-3 lock-in mutant
+ * + 3 general controls + 4 wave-3 lock-in controls = 37 fixtures.
  * ------------------------------------------------------------------------ */
 
 export const FIXTURES = [
@@ -1575,10 +1702,17 @@ export const FIXTURES = [
   M_OBJECT_STORAGE_MEDIA,
   M_PAYMENT_ZOMBIE_WEBHOOK,
   M_PLATFORM_LOCKIN_ENV,
+  // Wave 3 lock-in mutant (from external audit)
+  M_PLATFORM_LOCKIN_REPLIT_CONFIG,
   // Positive controls
   C_PERFECT_DEPLOYABLE,
   C_PERFECT_TOOL,
   C_PERFECT_LIBRARY,
+  // Wave 3 lock-in controls (over-tightening guards)
+  C_LOCKIN_PLAIN_STRIPE,
+  C_LOCKIN_PLAIN_OPENAI,
+  C_LOCKIN_VITE_CLEAN,
+  C_LOCKIN_PNPM_CLEAN,
 ];
 
 // Shared builders, exported for the seeded generator (exam-fixtures/generate.js).
