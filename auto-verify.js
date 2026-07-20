@@ -524,12 +524,18 @@ async function maybeBumpExamSeed(gh, healReport) {
     console.log(`  🎓 Perfect fixture exam (seed ${seed}) — no GitHub token, seed NOT bumped (re-run in CI to rotate)`);
     return false;
   }
-  await gh.putFile(
-    EXAM_SEED_PATH,
-    JSON.stringify({ seed: next, previousSeed: seed, bumpedAt: new Date().toISOString() }, null, 2) + '\n',
-    STATE_BRANCH,
-    `exam: perfect score at seed ${seed} — rotate to seed ${next}`,
-  );
+  try {
+    await gh.putFile(
+      EXAM_SEED_PATH,
+      JSON.stringify({ seed: next, previousSeed: seed, bumpedAt: new Date().toISOString() }, null, 2) + '\n',
+      STATE_BRANCH,
+      `exam: perfect score at seed ${seed} — rotate to seed ${next}`,
+    );
+  } catch (err) {
+    // Rotation is nice-to-have; a failed bump must never kill a verify run.
+    console.warn(`  WARN: Perfect fixture exam at seed ${seed}, but the seed bump failed (${err.message}) — continuing; a later run retries the rotation`);
+    return false;
+  }
   console.log(`  🎓 Perfect fixture exam at seed ${seed} — exam rotated to seed ${next} for the next run`);
   return true;
 }
@@ -557,6 +563,10 @@ export async function autoverify(argv = process.argv.slice(2)) {
   // The seed bump must happen BEFORE the no-candidates early exits below: a
   // perfect exam usually means auto-fix had no gaps to work on, so "nothing to
   // verify" is exactly the path where the exam must rotate.
+  // installFetchMiddleware MUST run before any GitHub WRITE below — without it
+  // requests go out unauthenticated: reads on a public repo still work, but the
+  // exam-seed.json PUT fails with 401 (this exact bug crashed a real run).
+  installFetchMiddleware();
   const repoSlug = opt.repo || process.env.GITHUB_REPOSITORY || null;
   let gh = null;
   if (process.env.GITHUB_TOKEN && repoSlug) {
