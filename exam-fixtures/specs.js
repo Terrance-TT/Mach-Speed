@@ -1352,6 +1352,53 @@ GITHUB_TOKEN = "ghp_T4mpusR3pl1tT0k3nExAmFixtur3N0tR3alX"
   expect: { 'platform-lock-in': ['fail'] },
 };
 
+// -- platform-lock-in #4 (wave 4): the Replit dependency hides in an
+//    artifacts/*/package.json — the directory convention Replit's own template
+//    uses (the external audit found exactly this in artifacts/study-flow-web).
+//    The current specialist only scans apps|packages/*/package.json --
+const M_PLATFORM_LOCKIN_ARTIFACTS_DEP = {
+  slug: 'mach-speed-exam/mutant-platform-lock-in-artifacts-dep',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Healthy Express deployable whose ROOT package.json is clean, but artifacts/study-flow-web/package.json depends on @replit/object-storage (and dev-depends on @replit/vite-plugin-cartographer) — the exact layout the external audit found in the real Tempus repo. Sub-package scanning that only covers apps|packages misses it. platform-lock-in must flag it.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    'artifacts/study-flow-web/package.json': JSON.stringify({
+      name: 'study-flow-web',
+      version: '1.0.0',
+      private: true,
+      dependencies: { react: '^18.3.1', '@replit/object-storage': '^0.2.1' },
+      devDependencies: { '@replit/vite-plugin-cartographer': '^0.1.3', vite: '^5.4.8' },
+    }, null, 2) + '\n',
+    'artifacts/study-flow-web/src/App.jsx': `// Study-flow web client.
+export default function App() {
+  return <main>Study Flow</main>;
+}
+`,
+  },
+  expect: { 'platform-lock-in': ['fail', 'check-it'] },
+};
+
+// -- platform-lock-in #5 (wave 4): .replit declares platform agent integrations
+//    (no bucket, no token) — a hard runtime dependency on Replit's managed
+//    services that the audit rates HIGH ("features will fail"). Existence-only
+//    detection says check-it; a declared integration must FAIL --
+const M_PLATFORM_LOCKIN_INTEGRATIONS = {
+  slug: 'mach-speed-exam/mutant-platform-lock-in-integrations-config',
+  kind: 'mutant',
+  expectedType: 'deployable',
+  note: "Healthy Express deployable whose .replit declares Replit agent integrations (stripe + openai) — no bucket ID and no token, so today's content check stops at check-it. But a declared managed integration means the app loses Stripe/OpenAI the moment it leaves Replit: the audit rates this HIGH ('features will fail'). platform-lock-in must FAIL it.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    '.replit': `run = "npm run dev"
+
+[agent]
+integrations = ["stripe:1.0.0", "openai:1.0.0"]
+`,
+  },
+  expect: { 'platform-lock-in': ['fail'] },
+};
+
 /* --------------------------------------------------------------------------
  * POSITIVE CONTROLS — provably-correct mini-repos; every listed check must
  * stay inside its allowed status set. Allowed sets were pinned to the
@@ -1661,11 +1708,156 @@ catalog:
   expect: { 'platform-lock-in': ['pass'] },
 };
 
+// -- Wave 4 boundary controls: pin the specialist's JUDGMENT, not just its
+// detection. Existence stays advisory, prose comments are not coupling,
+// near-miss URLs and non-Replit config keys stay green. Two of these
+// (comment-env, comment-api) are RED against the current specialist by
+// design — they measure the over-flagging gap and force comment-awareness
+// into the next verified rewrite, exactly like mutants do for misses.
+
+// -- boundary: bare .replit (run command only) is advisory, never critical --
+const C_LOCKIN_REPLIT_BARE = {
+  slug: 'mach-speed-exam/control-platform-lock-in-replit-bare',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "A .replit file containing ONLY a run command — no bucket IDs, no integrations, no secrets. The correct verdict is check-it (advisory: remove after migration), NOT fail. Pins the existence≠critical boundary.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    '.replit': `run = "npm run dev"
+`,
+  },
+  expect: { 'platform-lock-in': ['check-it'] },
+};
+
+// -- boundary: bare replit.nix (plain channel) is advisory, never critical --
+const C_LOCKIN_NIX_BARE = {
+  slug: 'mach-speed-exam/control-platform-lock-in-nix-bare',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "A replit.nix with only a standard channel declaration — no custom packages, no overlays. Correct verdict: check-it. A tightened specialist must not escalate plain config existence to fail.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    'replit.nix': `{ channel = "stable-24_05"; }
+`,
+  },
+  expect: { 'platform-lock-in': ['check-it'] },
+};
+
+// -- boundary (RED today, by design): Replit env vars mentioned in a PROSE
+//    comment are documentation, not coupling --
+const C_LOCKIN_COMMENT_ENV = {
+  slug: 'mach-speed-exam/control-platform-lock-in-comment-env',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "Config module whose only Replit signal is a PROSE migration comment mentioning REPL_ID and REPLIT_DB_URL — the live code reads APP_INSTANCE_ID / DATABASE_URL. Post-migration repos carry exactly these notes. Comment text is not coupling: the correct verdict is pass. (The current specialist flags comment text — this control measures that over-flagging gap.)",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    'server/config.js': `// Runtime configuration.
+// Migration note: this service previously read REPL_ID and REPLIT_DB_URL from the
+// Replit environment; both were replaced during migration (see CHANGELOG).
+
+const instanceId = process.env.APP_INSTANCE_ID || 'local';
+const databaseUrl = process.env.DATABASE_URL;
+
+module.exports = { instanceId, databaseUrl };
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
+// -- boundary (RED today, by design): the connector API mentioned in a PROSE
+//    comment is a migration note, not an active integration --
+const C_LOCKIN_COMMENT_API = {
+  slug: 'mach-speed-exam/control-platform-lock-in-comment-api',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "Portable Stripe client whose only Replit signal is a PROSE comment documenting the OLD connector-API approach (URL + X-Replit-Token header) that was replaced with STRIPE_SECRET_KEY. A precise specialist must not flag documentation of a removed integration. Correct verdict: pass. (Red against the current specialist by design.)",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY, deps: { ...STD_DEPS, stripe: '^16.2.0' } }),
+    'server/billing/stripeClient.js': `// Stripe client — portable: official SDK + plain env-var credentials.
+// Migration note: credentials used to be fetched from Replit's connector API
+// (GET https://<host>/api/v2/connection?connector_names=stripe with an
+// X-Replit-Token header). That integration was REMOVED; do not reintroduce it.
+const Stripe = require('stripe');
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+module.exports = { stripe };
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
+// -- boundary: a docs-only replit.md is prose, not platform coupling --
+const C_LOCKIN_REPLIT_MD = {
+  slug: 'mach-speed-exam/control-platform-lock-in-replit-md',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "A markdown doc describing the project's historical Replit setup (the audit classed exactly this as Low/docs). No .replit config, no packages, no env vars in code. Correct verdict: pass — documentation is not coupling.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    'replit.md': `# Legacy platform notes
+
+This project originally ran on a hosted all-in-one platform. Runtime
+configuration was migrated to plain environment variables; the notes below are
+kept for historical reference only.
+
+- workflows were replaced by npm scripts
+- package management uses pnpm via corepack
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
+// -- boundary: calling your OWN billing relay (similar URL shape) is not the
+//    Replit connector API --
+const C_LOCKIN_NEARMISS_URL = {
+  slug: 'mach-speed-exam/control-platform-lock-in-nearmiss-url',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "Code calls the company's OWN self-hosted billing relay at a structurally similar URL (/v2/connections?service=stripe on their own domain). It is not the platform connector API and carries no platform token. Correct verdict: pass — detection must anchor on the real signals, not vague URL similarity.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    'server/billing/payments.js': `// Payments — calls OUR OWN billing relay (self-hosted, runs anywhere).
+async function getCredentials() {
+  const res = await fetch('https://billing.acme-corp.internal/v2/connections?service=stripe', {
+    headers: { authorization: 'Bearer ' + process.env.BILLING_RELAY_TOKEN },
+  });
+  if (!res.ok) throw new Error('billing relay returned ' + res.status);
+  return res.json();
+}
+
+module.exports = { getCredentials };
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
+// -- boundary: minimumReleaseAgeExclude for NORMAL packages is a judgment
+//    call, not lock-in --
+const C_LOCKIN_PNPM_EXCLUDE_CLEAN = {
+  slug: 'mach-speed-exam/control-platform-lock-in-pnpm-exclude-clean',
+  kind: 'control',
+  expectedType: 'deployable',
+  note: "pnpm-workspace.yaml with a minimumReleaseAgeExclude list containing only mainstream packages (esbuild, typescript) and no platform overrides. The mere presence of the key is not lock-in — only Replit-scoped entries are. Correct verdict: pass.",
+  files: {
+    ...healthyDeployableFiles({ name: 'acme-shop-api', serverJs: SERVER_HEALTHY }),
+    'pnpm-workspace.yaml': `packages:
+  - 'artifacts/*'
+
+minimumReleaseAgeExclude:
+  - esbuild
+  - typescript
+`,
+  },
+  expect: { 'platform-lock-in': ['pass'] },
+};
+
 /* --------------------------------------------------------------------------
  * The full fixture set: 12 wave-1 mutants (one per original check) + 5 wave-1
  * mutants for the newer specialists + 12 wave-2 adversarial mutants (7 for the
- * original checks + 5 for the newer ones) + 1 wave-3 lock-in mutant
- * + 3 general controls + 4 wave-3 lock-in controls = 37 fixtures.
+ * original checks + 5 for the newer ones) + 3 wave-3/4 lock-in mutants
+ * + 3 general controls + 11 lock-in boundary/guard controls = 46 fixtures.
  * ------------------------------------------------------------------------ */
 
 export const FIXTURES = [
@@ -1704,6 +1896,9 @@ export const FIXTURES = [
   M_PLATFORM_LOCKIN_ENV,
   // Wave 3 lock-in mutant (from external audit)
   M_PLATFORM_LOCKIN_REPLIT_CONFIG,
+  // Wave 4 lock-in mutants (audit-grounded depth gaps + judgment escalation)
+  M_PLATFORM_LOCKIN_ARTIFACTS_DEP,
+  M_PLATFORM_LOCKIN_INTEGRATIONS,
   // Positive controls
   C_PERFECT_DEPLOYABLE,
   C_PERFECT_TOOL,
@@ -1713,6 +1908,14 @@ export const FIXTURES = [
   C_LOCKIN_PLAIN_OPENAI,
   C_LOCKIN_VITE_CLEAN,
   C_LOCKIN_PNPM_CLEAN,
+  // Wave 4 boundary controls (judgment pins; comment-* are RED today by design)
+  C_LOCKIN_REPLIT_BARE,
+  C_LOCKIN_NIX_BARE,
+  C_LOCKIN_COMMENT_ENV,
+  C_LOCKIN_COMMENT_API,
+  C_LOCKIN_REPLIT_MD,
+  C_LOCKIN_NEARMISS_URL,
+  C_LOCKIN_PNPM_EXCLUDE_CLEAN,
 ];
 
 // Shared builders, exported for the seeded generator (exam-fixtures/generate.js).
