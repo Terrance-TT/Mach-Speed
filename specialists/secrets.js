@@ -68,9 +68,18 @@ const VENDOR_PATHS = [
 
 const SCANNABLE_EXTS = /\.(js|ts|jsx|tsx|mjs|cjs|py|rb|go|java|kt|rs)$/;
 
-const STRONG_SECRET_RE = /(?:\b|_)(api[_-]?key|secret[_-]?key|private[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|password|api[_-]?secret|db[_-]?password|app[_-]?secret|client[_-]?secret|secret[_-]?token|auth[_-]?key|credentials)(?:\b|_)\s*[:=](?!=)/i;
+const STRONG_SECRET_RE = /(?:\b|_)(api[_-]?key|secret[_-]?key|private[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|password|passwd|pwd|secret|token|key|api[_-]?secret|client[_-]?secret|db[_-]?password|app[_-]?secret|secret[_-]?token|auth[_-]?key|credentials|private)(?:\b|_)\s*[:=](?!=)/i;
 
-const PREFIX_FRAGMENTS = ['AKIA', 'ASIA', 'ghp_', 'gho_', 'ghs_', 'ghu_', 'ghr_', 'AIza', 'npm_', 'xoxb-', 'xoxp-', 'xoxa-', 'xoxr-', 'xoxs-', 'sk_live_', 'pk_live_', 'sk-test-', 'sk_test_'];
+const PREFIX_FRAGMENTS = [
+  'AKIA', 'ASIA', 'AROA', 'AIDA',
+  'ghp_', 'gho_', 'ghs_', 'ghu_', 'ghr_', 'ghw_',
+  'AIza',
+  'npm_',
+  'xoxb-', 'xoxp-', 'xoxa-', 'xoxr-', 'xoxs-',
+  'sk_live_', 'pk_live_', 'sk_test_', 'pk_test_',
+  'sk-', 'pk_',
+  'bearer ', 'basic ',
+];
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -127,10 +136,12 @@ function hasStrongSecretContext(line) {
   return STRONG_SECRET_RE.test(code);
 }
 
-function hasPrefixFragment(strs) {
-  for (const s of strs) {
+function hasPrefixFragment(strings) {
+  const combined = strings.join('');
+  for (const s of [combined, ...strings]) {
+    const lower = s.toLowerCase();
     for (const p of PREFIX_FRAGMENTS) {
-      if (s.includes(p)) return p;
+      if (lower.includes(p.toLowerCase())) return p;
     }
   }
   return null;
@@ -149,6 +160,22 @@ function isPathOrUrl(combined) {
   return /https?:\/\//.test(combined) || /^\//.test(combined);
 }
 
+function hasSuspiciousKeyword(line) {
+  return /(?:^|[^a-zA-Z0-9])(key|token|secret|password|passwd|pwd|auth|access|credential|api|private|db)(?:[^a-zA-Z0-9]|$)/i.test(line);
+}
+
+function varietyAndEntropyCheck(combined) {
+  const hasLower = /[a-z]/.test(combined);
+  const hasUpper = /[A-Z]/.test(combined);
+  const hasDigit = /[0-9]/.test(combined);
+  const hasSpecial = /[^a-zA-Z0-9]/.test(combined);
+  const variety = [hasLower, hasUpper, hasDigit, hasSpecial].filter(Boolean).length;
+  if (variety >= 3 || (variety >= 2 && (hasDigit || hasSpecial))) {
+    return getEntropy(combined) > 3.0;
+  }
+  return false;
+}
+
 function checkSplitSecret(line) {
   if (!/['"]\s*\+\s*['"]/.test(line)) return null;
 
@@ -163,15 +190,13 @@ function checkSplitSecret(line) {
 
   if (isPathOrUrl(combined)) return null;
 
-  if (combined.length >= 16) {
-    if (!/[a-z]/.test(combined) || !/[A-Z]/.test(combined) || !/[0-9]/.test(combined)) return null;
-    if (getEntropy(combined) <= 3.5) return null;
-    const suspicious = /(?:^|[^a-zA-Z0-9])(key|token|secret|password|passwd|pwd|auth|access|credential)(?:[^a-zA-Z0-9]|$)/i;
-    if (!suspicious.test(line)) return null;
-    return 'Potential split hardcoded secret';
+  if (combined.length >= 10 && varietyAndEntropyCheck(combined)) {
+    if (hasStrongSecretContext(line) || hasSuspiciousKeyword(line)) {
+      return 'Potential split hardcoded secret';
+    }
   }
 
-  if (combined.length >= 8 && hasStrongSecretContext(line) && looksLikeRandomToken(combined)) {
+  if (combined.length >= 6 && hasStrongSecretContext(line) && looksLikeRandomToken(combined)) {
     return 'Potential split hardcoded secret';
   }
 
@@ -192,15 +217,13 @@ function checkArrayJoinSecret(line) {
 
   if (isPathOrUrl(combined)) return null;
 
-  if (combined.length >= 16) {
-    if (!/[a-z]/.test(combined) || !/[A-Z]/.test(combined) || !/[0-9]/.test(combined)) return null;
-    if (getEntropy(combined) <= 3.5) return null;
-    const suspicious = /(?:^|[^a-zA-Z0-9])(key|token|secret|password|passwd|pwd|auth|access|credential)(?:[^a-zA-Z0-9]|$)/i;
-    if (!suspicious.test(line)) return null;
-    return 'Potential split hardcoded secret via array join';
+  if (combined.length >= 10 && varietyAndEntropyCheck(combined)) {
+    if (hasStrongSecretContext(line) || hasSuspiciousKeyword(line)) {
+      return 'Potential split hardcoded secret via array join';
+    }
   }
 
-  if (combined.length >= 8 && hasStrongSecretContext(line) && looksLikeRandomToken(combined)) {
+  if (combined.length >= 6 && hasStrongSecretContext(line) && looksLikeRandomToken(combined)) {
     return 'Potential split hardcoded secret via array join';
   }
 
@@ -209,20 +232,16 @@ function checkArrayJoinSecret(line) {
 
 function checkMultiLineSplit(lines, startIdx) {
   const startLine = lines[startIdx];
-
-  if (!hasStrongSecretContext(startLine)) return null;
   if (!/['"]\s*\+\s*$/.test(startLine)) return null;
 
-  const startStrings = [...startLine.matchAll(/(['"])(.*?)\1/g)].map(m => m[2]);
-  const strings = [...startStrings];
-
+  const strings = extractQuotedStrings(startLine);
   let i = startIdx + 1;
-  const maxLines = Math.min(lines.length, startIdx + 6);
+  const maxLines = Math.min(lines.length, startIdx + 8);
 
   while (i < maxLines) {
     const line = lines[i];
     if (!/^\s*(\+\s*)?['"]/.test(line)) break;
-    const lineStrings = [...line.matchAll(/(['"])(.*?)\1/g)].map(m => m[2]);
+    const lineStrings = extractQuotedStrings(line);
     strings.push(...lineStrings);
     if (!/['"]\s*\+\s*$/.test(line)) break;
     i++;
@@ -239,7 +258,16 @@ function checkMultiLineSplit(lines, startIdx) {
 
   if (isPathOrUrl(combined)) return null;
 
-  if (looksLikeRandomToken(combined)) {
+  const block = lines.slice(startIdx, i + 1).join(' ');
+  const anySuspicious = hasStrongSecretContext(startLine) || hasSuspiciousKeyword(block);
+
+  if (combined.length >= 10 && varietyAndEntropyCheck(combined)) {
+    if (anySuspicious) {
+      return { issue: 'Potential split hardcoded secret', endIdx: i };
+    }
+  }
+
+  if (hasStrongSecretContext(startLine) && looksLikeRandomToken(combined)) {
     return { issue: 'Potential split hardcoded secret', endIdx: i };
   }
 
