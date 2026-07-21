@@ -24,11 +24,13 @@ const REPLIT_PACKAGES = [
   { pkg: '@replit/protocol', replacement: 'Remove — internal Replit protocol' },
 ];
 
-const REPLIT_ENV_VAR_PATTERN = /\b(?:REPLIT_\w+|REPL_IDENTITY|REPL_ID|REPL_DB_URL|REPL_IMAGE|REPL_LANGUAGE|REPL_OWNER|REPL_PUBKEYS|REPL_SLUG|REPL_URL|REPL_USERNAME|WEB_REPL_RENEWAL)\b/;
+const REPLIT_ENV_VAR_PATTERN = /\b(?:REPLIT_\w+|REPL_IDENTITY|REPL_ID|REPL_DB_URL|REPL_IMAGE|REPL_LANGUAGE|REPL_OWNER|REPL_PUBKEYS|REPL_SLUG|REPL_URL|REPL_USERNAME|WEB_REPL_RENEWAL|AI_INTEGRATIONS_\w+)\b/;
 
 const REPLIT_API_PATTERN = /X-Replit-Token|connection\?connector_names=|replit\.com\/api\//i;
 
 const REPLIT_CONFIG_CRITICAL_PATTERN = /defaultBucket|ghp_[A-Za-z0-9_]+/i;
+
+const REPLIT_WORKSPACE_PATTERN = /@replit\/|stripe-replit-sync/i;
 
 const EXCLUDED_PREFIXES = [
   'node_modules/',
@@ -63,12 +65,52 @@ function looksLikeSourceFile(p) {
   return CODE_EXTENSIONS.test(p);
 }
 
+function isCommentLine(line) {
+  const trimmed = line.trimStart();
+  return (
+    trimmed.startsWith('//') ||
+    trimmed.startsWith('#') ||
+    trimmed.startsWith('/*') ||
+    trimmed.startsWith('*') ||
+    trimmed.startsWith('*/') ||
+    trimmed.startsWith('<!--') ||
+    trimmed.startsWith('--') ||
+    trimmed.startsWith(';')
+  );
+}
+
+function getMatchLines(content, pattern) {
+  if (!content) return [];
+  const lines = content.split(/\r?\n/);
+  const matched = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!pattern.test(line)) continue;
+    if (isCommentLine(line)) continue;
+    matched.push(i + 1);
+  }
+  return matched;
+}
+
+function hasPatternInNonCommentLines(content, pattern) {
+  if (!content) return false;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    if (!pattern.test(line)) continue;
+    if (isCommentLine(line)) continue;
+    return true;
+  }
+  return false;
+}
+
 function filePriority(p) {
   let score = 0;
   const lower = p.toLowerCase();
   if (/replit/.test(lower)) score += 100;
   if (/(?:auth|identity)/.test(lower)) score += 60;
   if (/(?:billing|payment|stripe|connector)/.test(lower)) score += 60;
+  if (/(?:ai|llm|openai|anthropic)/.test(lower)) score += 50;
+  if (/(?:integration|connector)/.test(lower)) score += 50;
   if (/(?:config|settings)/.test(lower)) score += 40;
   if (/(?:server|api|middleware|route|controller|handler)/.test(lower)) score += 30;
   if (/(?:env|secret|credential|token)/.test(lower)) score += 30;
@@ -90,46 +132,60 @@ export async function check(context) {
       };
     }
 
+    const findings = [];
+    let hasCritical = false;
+
+    // Root package.json dependencies
     const deps = { ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) };
-    const found = [];
     for (const { pkg, replacement } of REPLIT_PACKAGES) {
-      if (deps[pkg]) found.push({ pkg, replacement });
+      if (deps[pkg]) {
+        findings.push({ file: 'package.json', issue: `${pkg} detected — ${replacement}` });
+        hasCritical = true;
+      }
     }
 
-    const subPkgs = tree.filter(p => isFile(p) && /^(?:apps|packages)\/[^/]+\/package\.json$/.test(p));
-    for (const subPkgPath of subPkgs.slice(0, 10)) {
+    // ALL sub-package.json files (bounded)
+    const subPkgPaths = tree.filter(p =>
+      isFile(p) &&
+      p.endsWith('package.json') &&
+      !isExcludedPath(p) &&
+      p !== 'package.json'
+    ).slice(0, 20);
+
+    for (const subPkgPath of subPkgPaths) {
       try {
         const content = await files.get(subPkgPath);
         if (!content) continue;
         const sub = JSON.parse(content);
         const subDeps = { ...(sub.dependencies || {}), ...(sub.devDependencies || {}) };
         for (const { pkg, replacement } of REPLIT_PACKAGES) {
-          if (subDeps[pkg]) found.push({ pkg, replacement, inPackage: subPkgPath });
+          if (subDeps[pkg]) {
+            findings.push({ file: subPkgPath, issue: `${pkg} detected — ${replacement}` });
+            hasCritical = true;
+          }
         }
       } catch (e) {
         console.error(`platform-lock-in: error reading ${subPkgPath}:`, e);
       }
     }
 
-    const findings = [];
-    for (const f of found) {
-      findings.push({
-        file: f.inPackage || 'package.json',
-        issue: `${f.pkg} detected — ${f.replacement}`,
-      });
-    }
-
     const hasReplitConfig = tree.includes('.replit') || tree.includes('replit.nix');
-    let replitCritical = false;
 
+    // .replit config
     if (tree.includes('.replit')) {
       try {
         const replitContent = await files.get('.replit');
-        if (replitContent && REPLIT_CONFIG_CRITICAL_PATTERN.test(replitContent)) {
-          replitCritical = true;
-          findings.push({ file: '.replit', issue: 'Replit config contains platform-managed resource IDs or embedded secrets — critical lock-in' });
-        } else {
-          findings.push({ file: '.replit', issue: 'Replit config file detected — remove after migrating env vars and dependencies' });
+        if (replitContent) {
+          const isCritical =
+            hasPatternInNonCommentLines(replitContent, REPLIT_CONFIG_CRITICAL_PATTERN) ||
+            hasPatternInNonCommentLines(replitContent, /\bintegrations\b/i) ||
+            hasPatternInNonCommentLines(replitContent, /\bagent\b/i);
+          if (isCritical) {
+            hasCritical = true;
+            findings.push({ file: '.replit', issue: 'Replit config contains managed integrations, resources, or secrets — critical lock-in' });
+          } else {
+            findings.push({ file: '.replit', issue: 'Replit config file detected — remove after migrating env vars and dependencies' });
+          }
         }
       } catch (e) {
         console.error('platform-lock-in: error reading .replit:', e);
@@ -141,60 +197,61 @@ export async function check(context) {
       findings.push({ file: 'replit.nix', issue: 'Replit nix config detected — remove after migrating dependencies to standard package management' });
     }
 
-    if (found.length >= 1) {
-      return {
-        checkId,
-        status: 'fail',
-        confidence: 'high',
-        message: `${found.length} Replit-specific dependencies found — must be replaced before migrating`,
-        findings,
-      };
+    // pnpm-workspace.yaml / .yml
+    const pnpmPath = tree.includes('pnpm-workspace.yaml') ? 'pnpm-workspace.yaml' :
+                     tree.includes('pnpm-workspace.yml') ? 'pnpm-workspace.yml' : null;
+    if (pnpmPath) {
+      try {
+        const pnpmContent = await files.get(pnpmPath);
+        if (pnpmContent && hasPatternInNonCommentLines(pnpmContent, REPLIT_WORKSPACE_PATTERN)) {
+          findings.push({ file: pnpmPath, issue: 'Workspace config references Replit-specific packages or exemptions — build portability risk' });
+          hasCritical = true;
+        }
+      } catch (e) {
+        console.error(`platform-lock-in: error reading ${pnpmPath}:`, e);
+      }
     }
 
-    if (replitCritical) {
-      return {
-        checkId,
-        status: 'fail',
-        confidence: 'high',
-        message: 'Replit config contains critical platform lock-in signals — must be migrated',
-        findings,
-      };
-    }
-
+    // Scan source files for Replit-only environment variables and API patterns (up to 30 reads)
     const sourceFiles = tree
       .filter(looksLikeSourceFile)
       .sort((a, b) => filePriority(b) - filePriority(a))
       .slice(0, 30);
 
-    const sourceFindings = [];
     for (const filePath of sourceFiles) {
       try {
         const content = await files.get(filePath);
         if (!content) continue;
-        if (REPLIT_ENV_VAR_PATTERN.test(content)) {
-          sourceFindings.push({
+        const envMatches = getMatchLines(content, REPLIT_ENV_VAR_PATTERN);
+        for (const line of envMatches) {
+          findings.push({
             file: filePath,
+            line,
             issue: 'Replit-specific environment variable or identity token referenced — app may only run on Replit',
           });
+          hasCritical = true;
         }
-        if (REPLIT_API_PATTERN.test(content)) {
-          sourceFindings.push({
+        const apiMatches = getMatchLines(content, REPLIT_API_PATTERN);
+        for (const line of apiMatches) {
+          findings.push({
             file: filePath,
+            line,
             issue: 'Replit-specific API or connector token usage detected — hard platform coupling',
           });
+          hasCritical = true;
         }
       } catch (e) {
         console.error(`platform-lock-in: error reading ${filePath}:`, e);
       }
     }
 
-    if (sourceFindings.length > 0) {
+    if (hasCritical) {
       return {
         checkId,
         status: 'fail',
         confidence: 'high',
-        message: `${sourceFindings.length} Replit-specific platform reference(s) found in source — must be decoupled before migrating`,
-        findings: [...findings, ...sourceFindings],
+        message: `${findings.length} Replit-specific platform lock-in signal(s) found — must be decoupled before migrating`,
+        findings,
       };
     }
 
