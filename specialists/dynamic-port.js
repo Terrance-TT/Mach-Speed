@@ -12,7 +12,7 @@ const FRAMEWORK_CORE_NAMES = new Set([
 ]);
 
 function classifyPath(p) {
-  if (/^(?:examples?|demos?|test|tests|spec|__tests__|fixtures?|playground|benchmarks?|docs?|\.github|coverage|storybook|stories|\.storybook|e2e|cypress|playwright|mock|mocks|vendor|tools?|scripts?|tasks?|automation|ci|\.ci|sites?|websites?)\//.test(p)) return 'nonprod';
+  if (/^(?:examples?|demos?|test|tests|spec|__tests__|fixtures?|playground|benchmarks?|docs?|\.github|coverage|storybook|stories|\.storybook|e2e|cypress|playwright|mock|mocks|vendor|tools?|scripts?|tasks?|automation|ci|\.ci|sites?|websites?|docker|\.docker|dev|development|infra|terraform|pulumi|\.k8s|kubernetes)\//.test(p)) return 'nonprod';
   if (/\.(?:test|spec|d|bench|benchmark)\.(?:js|ts|jsx|tsx|mjs|cjs)$/.test(p)) return 'nonprod';
   if (/(?:^|\/)node_modules\//.test(p)) return 'nonprod';
   if (/(?:^|\/)dist\//.test(p)) return 'nonprod';
@@ -123,7 +123,13 @@ function selectFiles(tree, packageJson) {
     candidates.push({ path: p, priority: prio });
   };
 
-  ['package.json', 'Dockerfile', 'Procfile', 'fly.toml', 'vercel.json', 'netlify.toml', 'render.yaml', 'app.yaml', 'wrangler.toml', 'docker-compose.yml', 'docker-compose.yaml']
+  ['package.json', 'Dockerfile', 'Procfile', 'fly.toml', 'vercel.json', 'netlify.toml', 'render.yaml', 'app.yaml', 'wrangler.toml']
+    .forEach(f => add(f, 0));
+
+  ['docker-compose.yml', 'docker-compose.yaml']
+    .forEach(f => add(f, 0));
+
+  ['.env.example', '.env.template', '.env.local.example', '.env.sample', '.env.defaults', '.env.dist']
     .forEach(f => add(f, 0));
 
   if (packageJson?.main) {
@@ -180,6 +186,9 @@ function selectFiles(tree, packageJson) {
   tree.filter(p => isFile(p) && /^(?:src\/)?(?:pages\/api|app\/api|routes|api)\//.test(p) && JS_RE.test(p) && !/\.(?:test|spec|d)\./.test(p))
     .slice(0, 6).forEach(p => add(p, 7));
 
+  tree.filter(p => isFile(p) && /\.sh$/.test(p) && !/(?:^|\/)node_modules\//.test(p) && p.split('/').length <= 2)
+    .forEach(p => add(p, 1));
+
   if (candidates.length < 15) {
     const diverse = tree.filter(p => {
       if (!isFile(p)) return false;
@@ -215,9 +224,8 @@ function selectFiles(tree, packageJson) {
 
 const DYNAMIC_PATTERNS = [
   /process\.env\.PORT\b/,
-  /process\.env\['PORT'\]/,
-  /process\.env\["PORT"\]/,
-  /Deno\.env\.get\(['"]PORT['"]\)/,
+  /process\.env\[\s*['"]PORT['"]\s*\]/,
+  /Deno\.env\.get\(\s*['"]PORT['"]\s*\)/,
   /Bun\.env\.PORT\b/,
   /import\.meta\.env\.PORT\b/,
   /Number\s*\(\s*process\.env\.PORT\s*\)/,
@@ -234,6 +242,7 @@ const DYNAMIC_PATTERNS = [
   /app\.set\s*\(\s*['"]port['"]\s*,\s*process\.env\.PORT\b/,
   /server\.listen\s*\(\s*\{\s*port\s*:\s*process\.env\.PORT\b/,
   /listen\s*\(\s*\{\s*port\s*:\s*process\.env\.PORT\b/,
+  /\benv\.PORT\b/,
 ];
 
 const HARDCODED_PATTERNS = [
@@ -250,7 +259,7 @@ function scanScripts(pkg, filePath = 'package.json') {
   if (!pkg?.scripts) return findings;
   for (const [name, script] of Object.entries(pkg.scripts)) {
     if (!script || typeof script !== 'string') continue;
-    if (/process\.env\.PORT|\$PORT\b/.test(script)) {
+    if (/process\.env\.PORT|\$PORT\b|\$\{PORT\}|--port\s+\$PORT\b|PORT=\$PORT\b/.test(script)) {
       findings.push({ file: filePath, issue: `Script "${name}" references dynamic PORT` });
     }
     const m = script.match(/\b(?:PORT|port)\s*[=:]\s*(3000|3001|8080|8081|5000|5001|8000|9000|4000|4200)\b/);
@@ -278,6 +287,8 @@ export async function check(context) {
 
     allFindings.push(...scanScripts(packageJson).map(f => ({ ...f, location: 'prod' })));
 
+    let subPkgHasServerDep = false;
+    let subPkgHasMetaFramework = false;
     const subPkgs = tree.filter(p => isFile(p) && /^(?:apps|packages)\/[^/]+\/package\.json$/.test(p));
     for (const subPkgPath of subPkgs.slice(0, 10)) {
       try {
@@ -285,6 +296,16 @@ export async function check(context) {
         if (!content) continue;
         const subPkg = JSON.parse(content);
         allFindings.push(...scanScripts(subPkg, subPkgPath).map(f => ({ ...f, location: classifyPath(subPkgPath) })));
+
+        const subDeps = { ...(subPkg.dependencies || {}), ...(subPkg.devDependencies || {}) };
+        const serverDepRe = /^(?:express|fastify|koa|hono|polka|restify|connect|micro|sirv|serve-static|http-server|next|nuxt|astro|nitro|h3|remix|solid-start)\b/;
+        if (Object.keys(subDeps).some(d => serverDepRe.test(d))) {
+          subPkgHasServerDep = true;
+        }
+        const metaRe = /^(?:next|nuxt|astro|solid-start|remix)\b/;
+        if (Object.keys(subDeps).some(d => metaRe.test(d))) {
+          subPkgHasMetaFramework = true;
+        }
       } catch (e) {
         console.error(`Error reading/parsing ${subPkgPath}:`, e);
       }
@@ -311,8 +332,39 @@ export async function check(context) {
         }
 
         if (filePath === 'Procfile') {
-          if (/\$PORT/.test(content)) {
-            allFindings.push({ file: filePath, issue: 'Procfile references $PORT', location });
+          if (/\$PORT\b/.test(content)) {
+            allFindings.push({ file: filePath, issue: 'Procfile references dynamic $PORT', location });
+          }
+          continue;
+        }
+
+        if (/^docker-compose\.ya?ml$/.test(filePath)) {
+          const lines = content.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (/\$(?:\{PORT\}|PORT\b)/.test(lines[i])) {
+              allFindings.push({ file: filePath, line: i + 1, issue: 'Docker Compose references dynamic $PORT', location });
+            }
+          }
+          continue;
+        }
+
+        if (/\.env(?:\.|$)/.test(filePath) && !JS_RE.test(filePath)) {
+          const lines = content.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (/^PORT=/.test(line) || /^#+\s*PORT=/.test(line)) {
+              allFindings.push({ file: filePath, line: i + 1, issue: 'Env file documents PORT variable', location });
+            }
+          }
+          continue;
+        }
+
+        if (/\.sh$/.test(filePath)) {
+          const lines = content.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (/\$(?:\{PORT\}|PORT\b)/.test(lines[i])) {
+              allFindings.push({ file: filePath, line: i + 1, issue: 'Shell script references dynamic $PORT', location });
+            }
           }
           continue;
         }
@@ -348,12 +400,18 @@ export async function check(context) {
       }
     }
 
+    const isFramework = isFrameworkCore(packageJson, tree, repoType);
+
     const prodDynamic = allFindings.filter(f => f.location === 'prod' && f.issue.startsWith('Dynamic'));
-    const prodHardcoded = allFindings.filter(f => f.location === 'prod' && f.issue.startsWith('Hardcoded'));
+    const prodHardcodedAll = allFindings.filter(f => f.location === 'prod' && f.issue.startsWith('Hardcoded'));
+    const prodHardcoded = prodHardcodedAll.filter(f => {
+      if (isFramework && JS_RE.test(f.file)) return false;
+      return true;
+    });
     const nonprodFindings = allFindings.filter(f => f.location === 'nonprod');
 
     if (prodDynamic.length > 0 && prodHardcoded.length === 0) {
-      return { checkId, status: 'pass', confidence: 'high', message: 'Dynamic port configuration found (process.env.PORT)', findings: allFindings };
+      return { checkId, status: 'pass', confidence: 'high', message: 'Dynamic port configuration found (process.env.PORT or equivalent)', findings: allFindings };
     }
 
     if (prodHardcoded.length > 0 && prodDynamic.length === 0) {
@@ -364,12 +422,12 @@ export async function check(context) {
       return { checkId, status: 'check-it', confidence: 'medium', message: 'Both dynamic and hardcoded port patterns found in production files', findings: allFindings };
     }
 
-    if (isFrameworkCore(packageJson, tree, repoType) && prodHardcoded.length === 0) {
+    if (isFramework && prodHardcoded.length === 0) {
       return { checkId, status: 'pass', confidence: 'medium', message: 'Framework repo — port configuration handled by framework core', findings: allFindings };
     }
 
-    const hasMetaFramework = hasMetaFrameworkDep(packageJson);
-    const hasServerDep = hasServerDependency(packageJson);
+    const hasMetaFramework = hasMetaFrameworkDep(packageJson) || subPkgHasMetaFramework;
+    const hasServerDep = hasServerDependency(packageJson) || subPkgHasServerDep;
     const hasDeployArtifact = tree.some(p => isFile(p) && /^(?:Dockerfile|Procfile|fly\.toml|vercel\.json|netlify\.toml|render\.yaml|app\.yaml|wrangler\.toml|docker-compose\.yml|docker-compose\.yaml)$/.test(p));
     const hasStartScript = packageJson?.scripts?.start || packageJson?.scripts?.serve || packageJson?.scripts?.preview || packageJson?.scripts?.dev;
 
@@ -377,7 +435,7 @@ export async function check(context) {
       return { checkId, status: 'pass', confidence: 'medium', message: 'Framework-managed server supports dynamic port configuration', findings: allFindings };
     }
 
-    if (!hasServerSignals(packageJson, tree) && !hasMetaFramework && !hasDeployArtifact && !hasStartScript) {
+    if (!hasServerSignals(packageJson, tree) && !hasMetaFramework && !hasDeployArtifact && !hasStartScript && !subPkgHasServerDep) {
       return { checkId, status: 'not-applicable', confidence: 'medium', message: 'No server runtime detected — port check not applicable', findings: allFindings };
     }
 
