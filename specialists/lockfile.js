@@ -9,10 +9,12 @@ export const appliesTo = ['all'];
 
 const LOCKFILES = {
   'package-lock.json': 'npm',
+  'npm-shrinkwrap.json': 'npm',
   'yarn.lock': 'yarn',
   'pnpm-lock.yaml': 'pnpm',
   'bun.lock': 'bun',
   'bun.lockb': 'bun',
+  'deno.lock': 'deno',
 };
 
 function escapeRegex(str) {
@@ -44,12 +46,60 @@ export async function check(context) {
     }
 
     if (presentLockfiles.length === 0) {
+      const directDeps = packageJson
+        ? [
+            ...Object.keys(packageJson.dependencies || {}),
+            ...Object.keys(packageJson.devDependencies || {}),
+            ...Object.keys(packageJson.optionalDependencies || {}),
+          ]
+        : [];
+
+      const hasWorkspaces = !!packageJson?.workspaces || tree.includes('pnpm-workspace.yaml');
+
+      if (directDeps.length === 0 && !hasWorkspaces) {
+        return {
+          checkId,
+          status: 'pass',
+          confidence: 'high',
+          message: 'No lockfile needed — no dependencies declared',
+          findings: []
+        };
+      }
+
+      const isPublishedPackage =
+        packageJson &&
+        packageJson.private !== true &&
+        typeof packageJson.version === 'string' &&
+        packageJson.version.length > 0 &&
+        (Array.isArray(packageJson.files) ||
+          (packageJson.publishConfig && typeof packageJson.publishConfig === 'object'));
+
+      if (isPublishedPackage) {
+        return {
+          checkId,
+          status: 'pass',
+          confidence: 'high',
+          message: 'No lockfile present, but not required for published library/framework deployment readiness',
+          findings: [
+            {
+              file: 'package.json',
+              issue: 'Published package without lockfile — acceptable for library/framework repos'
+            }
+          ]
+        };
+      }
+
       return {
         checkId,
         status: 'fail',
         confidence: 'high',
         message: 'No lockfile found — install may not be reproducible',
-        findings: [{ file: 'package.json', issue: 'Missing lockfile (package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lock, or bun.lockb)' }]
+        findings: [
+          {
+            file: 'package.json',
+            issue: 'Missing lockfile (package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock, bun.lockb, or deno.lock)'
+          }
+        ]
       };
     }
 
@@ -69,7 +119,7 @@ export async function check(context) {
           const missingDeps = [];
 
           try {
-            if (file === 'package-lock.json') {
+            if (file === 'package-lock.json' || file === 'npm-shrinkwrap.json') {
               const lock = JSON.parse(content);
               const locked = new Set();
               let recognized = false;
@@ -106,7 +156,7 @@ export async function check(context) {
                 if (!re.test(content)) missingDeps.push(dep);
               }
             }
-            // bun.lockb is binary; skip content-based staleness check
+            // bun.lockb and deno.lock are binary/text formats we skip for content staleness
           } catch (err) {
             console.error(`Error checking staleness of ${file}:`, err);
             continue;
@@ -129,13 +179,12 @@ export async function check(context) {
       }
     }
 
-    const managers = presentLockfiles.map(lf => lf.manager);
-    const uniqueManagers = [...new Set(managers)];
+    const managers = [...new Set(presentLockfiles.map(lf => lf.manager))];
     return {
       checkId,
       status: 'pass',
       confidence: 'high',
-      message: `Lockfile found: ${uniqueManagers.join(', ')}`,
+      message: `Lockfile found: ${managers.join(', ')}`,
       findings
     };
   } catch (err) {
